@@ -1,0 +1,97 @@
+# GoReleaser v2 — https://goreleaser.com
+version: 2
+
+project_name: tether
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: tether
+    main: ./cmd/tether
+    binary: tether
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/adeelahmad/tether/internal/version.Version={{ .Version }}
+      - -X github.com/adeelahmad/tether/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/adeelahmad/tether/internal/version.Date={{ .Date }}
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore\\(deps\\)"
+
+dockers_v2:
+  - id: tether
+    dockerfile: goreleaser.Dockerfile
+    images:
+      - ghcr.io/adeelahmad/tether
+    tags:
+      - "{{ .Version }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.description: "Your logged-in Chrome as a proxy and WebDriver endpoint. No extension."
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.source: "{{ .GitURL }}"
+      org.opencontainers.image.licenses: MIT
+
+homebrew_casks:
+  - name: tether
+    repository:
+      owner: adeelahmad
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/adeelahmad/tether
+    description: Your logged-in Chrome as a proxy and WebDriver endpoint, from anywhere. No extension.
+    license: MIT
+    skip_upload: auto
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/tether"]
+          end
+
+release:
+  prerelease: auto
+  footer: |
+    **Install:** `brew install --cask adeelahmad/tap/tether` · `go install github.com/adeelahmad/tether/cmd/tether@{{ .Tag }}` · `docker pull ghcr.io/adeelahmad/tether:{{ .Version }}`

@@ -1,0 +1,57 @@
+version: "2"
+
+run:
+  timeout: 5m
+  build-tags:
+    - integration
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - revive
+    - unconvert
+    - unparam
+    - whitespace
+  settings:
+    errcheck:
+      exclude-functions:
+        - (net/http.ResponseWriter).Write
+        - (io.Closer).Close
+        - encoding/json.Unmarshal
+    gosec:
+      excludes:
+        - G104 # covered by errcheck
+        - G304 # reading operator-supplied paths is the point of --token-file etc.
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: package-comments
+        - name: var-naming
+        - name: indent-error-flow
+        - name: unused-parameter
+          disabled: true
+  exclusions:
+    presets:
+      - std-error-handling
+      - common-false-positives
+    rules:
+      - path: _test\.go
+        linters: [errcheck, gosec, noctx, bodyclose, unparam]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/adeelahmad/tether

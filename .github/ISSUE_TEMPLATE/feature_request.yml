@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest an idea for Tether
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like Tether to do?
+  - type: dropdown
+    id: face
+    attributes:
+      label: Which face does this touch?
+      options:
+        - HTTP proxy
+        - WebDriver
+        - MCP (planned)
+        - Remote UI (planned)
+        - Core / sessions
+        - Docs / tooling

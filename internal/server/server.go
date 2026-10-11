@@ -1,6 +1,6 @@
 // Package server wires Tether's faces onto one listener: the forward proxy
 // (CONNECT and absolute-form requests), the control API, the WebDriver
-// endpoints, and the MCP and remote-UI seams. It owns authentication, the
+// endpoints, the MCP face and the remote-UI seam. It owns authentication, the
 // loopback guard, and graceful shutdown.
 package server
 

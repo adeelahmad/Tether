@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,7 @@ import (
 	"github.com/adeelahmad/tether/internal/app"
 	"github.com/adeelahmad/tether/internal/cdp"
 	"github.com/adeelahmad/tether/internal/config"
+	"github.com/adeelahmad/tether/internal/mcp"
 	"github.com/adeelahmad/tether/internal/proxy"
 	"github.com/adeelahmad/tether/internal/webdriver"
 )
@@ -150,7 +152,7 @@ func startTether(t *testing.T, opts ...func(*config.Config)) (base string, clien
 		Addr: "127.0.0.1:0", Chrome: "auto", Launch: true, Headless: true,
 		ProfileDir: dir + "/profile", DataDir: dir, IdleTimeout: time.Minute, Timeout: 30 * time.Second,
 		ConsoleBuffer: 100,
-		LogLevel:      "debug", ChromeArgs: strings.Fields(os.Getenv("TETHER_CHROME_ARGS")),
+		LogLevel:      "debug", ChromeArgs: strings.Fields(os.Getenv("TETHER_CHROME_ARGS")), MCP: true,
 	}
 	for _, o := range opts {
 		o(cfg)
@@ -1033,5 +1035,156 @@ func TestWebDriverUploadAndPrint(t *testing.T) {
 	resp.Body.Close()
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("uploaded file should be removed with the session: %v", err)
+	}
+}
+
+// mcpClient is a minimal Streamable HTTP MCP client.
+type mcpClient struct {
+	t    *testing.T
+	url  string
+	sid  string
+	next int
+}
+
+func (m *mcpClient) rpc(method string, params any) json.RawMessage {
+	m.t.Helper()
+	m.next++
+	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": m.next, "method": method, "params": params})
+	req, _ := http.NewRequest("POST", m.url, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if m.sid != "" {
+		req.Header.Set(mcp.HeaderSessionID, m.sid)
+		req.Header.Set(mcp.HeaderProtocolVersion, mcp.LatestProtocolVersion)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		m.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if id := resp.Header.Get(mcp.HeaderSessionID); id != "" {
+		m.sid = id
+	}
+	var out struct {
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || out.Error != nil {
+		m.t.Fatalf("%s: %d %v %+v", method, resp.StatusCode, err, out.Error)
+	}
+	return out.Result
+}
+
+type mcpContent struct {
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	Data     string `json:"data"`
+	MimeType string `json:"mimeType"`
+}
+
+// tool calls a tool and returns its first content block, failing on a
+// tool error.
+func (m *mcpClient) tool(name string, args map[string]any) mcpContent {
+	m.t.Helper()
+	var r struct {
+		Content []mcpContent `json:"content"`
+		IsError bool         `json:"isError"`
+	}
+	if err := json.Unmarshal(m.rpc("tools/call", map[string]any{"name": name, "arguments": args}), &r); err != nil {
+		m.t.Fatal(err)
+	}
+	if r.IsError || len(r.Content) == 0 {
+		m.t.Fatalf("%s failed: %+v", name, r.Content)
+	}
+	return r.Content[0]
+}
+
+func ref(t *testing.T, snapshot, pattern string) string {
+	t.Helper()
+	m := regexp.MustCompile(`\[(e\d+)\] ` + pattern).FindStringSubmatch(snapshot)
+	if m == nil {
+		t.Fatalf("no element matching %q in snapshot:\n%s", pattern, snapshot)
+	}
+	return m[1]
+}
+
+func TestMCP(t *testing.T) {
+	s := site()
+	defer s.Close()
+	base, _ := startTether(t)
+	m := &mcpClient{t: t, url: base + mcp.Prefix}
+
+	m.rpc("initialize", map[string]any{"protocolVersion": mcp.LatestProtocolVersion, "capabilities": map[string]any{},
+		"clientInfo": map[string]string{"name": "integration", "version": "1"}})
+	if m.sid == "" {
+		t.Fatal("no MCP session id")
+	}
+
+	// Log in, then read the page the way an agent does.
+	if out := m.tool("browser_navigate", map[string]any{"url": s.URL + "/login"}).Text; !strings.Contains(out, "Title: Hello alice") {
+		t.Fatalf("navigate = %s", out)
+	}
+	snap := m.tool("browser_snapshot", map[string]any{}).Text
+	for _, want := range []string{"Page: Hello alice", "rendered-by-js", `button "Go"`, `link "again" -> /me?clicked=1`} {
+		if !strings.Contains(snap, want) {
+			t.Fatalf("snapshot missing %q:\n%s", want, snap)
+		}
+	}
+	again := ref(t, snap, `link "again"`)
+	if snap2 := m.tool("browser_snapshot", map[string]any{"max_text": 0}).Text; ref(t, snap2, `link "again"`) != again {
+		t.Fatal("the same element got a different ref")
+	}
+
+	// Type and submit a form with real key events.
+	box := ref(t, snap, `textbox "q"`)
+	if out := m.tool("browser_type", map[string]any{"ref": box, "text": "tether", "submit": true}).Text; !strings.Contains(out, s.URL+"/search?q=tether") {
+		t.Fatalf("type+submit = %s", out)
+	}
+	if out := m.tool("browser_eval", map[string]any{"expression": "document.getElementById('r').textContent"}).Text; out != `"tether"` {
+		t.Fatalf("eval = %s", out)
+	}
+	m.tool("browser_wait_for", map[string]any{"selector": "#r", "text": "tether"})
+
+	// Back, then click a link with a real mouse event.
+	m.tool("browser_history", map[string]any{"action": "back"})
+	snap = m.tool("browser_snapshot", map[string]any{}).Text
+	if out := m.tool("browser_click", map[string]any{"ref": ref(t, snap, `link "again"`)}).Text; !strings.Contains(out, s.URL+"/me?clicked=1") {
+		t.Fatalf("click = %s", out)
+	}
+	m.tool("browser_press_key", map[string]any{"key": "End"})
+	m.tool("browser_scroll", map[string]any{"direction": "up"})
+
+	// HTTP with the browser's own cookies.
+	out := m.tool("browser_fetch", map[string]any{"url": s.URL + "/api/echo", "method": "POST", "body": "hi"}).Text
+	if !strings.Contains(out, "HTTP 201") || !strings.Contains(out, `"sid":"alice"`) || !strings.Contains(out, `"body":"hi"`) {
+		t.Fatalf("fetch = %s", out)
+	}
+
+	// Screenshots work even when the agent's background tab is idle.
+	m.tool("browser_screenshot", map[string]any{})
+	snap = m.tool("browser_snapshot", map[string]any{}).Text
+	m.tool("browser_screenshot", map[string]any{"ref": ref(t, snap, `link "again"`)})
+	shot := m.tool("browser_screenshot", map[string]any{"full_page": true})
+	if raw, err := base64.StdEncoding.DecodeString(shot.Data); shot.Type != "image" || err != nil || !bytes.HasPrefix(raw, []byte("\x89PNG")) {
+		t.Fatalf("screenshot is not a PNG: %s", shot.Type)
+	}
+
+	// Tabs: the agent's tab shows up, and closing the session closes it.
+	tabs := m.tool("browser_tabs", map[string]any{}).Text
+	if !strings.Contains(tabs, "opened by you, current") {
+		t.Fatalf("tabs = %s", tabs)
+	}
+	req, _ := http.NewRequest("DELETE", m.url, nil)
+	req.Header.Set(mcp.HeaderSessionID, m.sid)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete session: %v", err)
+	}
+	resp.Body.Close()
+	_, body := send(t, &http.Client{}, "GET", base+"/tether/v1/tabs", nil, nil)
+	if strings.Contains(body, s.URL) {
+		t.Fatalf("MCP tab still open after the session ended: %s", body)
 	}
 }

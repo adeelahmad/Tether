@@ -20,7 +20,7 @@ flowchart LR
     G[auth · loopback guard · recover]
     P[Proxy face<br/>HTTP + CONNECT/MITM]
     W[WebDriver face<br/>W3C common set]
-    M[MCP face<br/><i>stub</i>]
+    M[MCP face<br/>Streamable HTTP tools]
     R[Remote UI face<br/><i>stub</i>]
     A[Control API<br/>/tether/v1]
     subgraph core[core]
@@ -35,7 +35,7 @@ flowchart LR
 
   C1 --> G --> P
   C2 --> G --> W
-  C3 -.-> G -.-> M
+  C3 --> G --> M
   C4 -.-> G -.-> R
   G --> A
   P & W & M & R & A --> E
@@ -50,7 +50,7 @@ flowchart LR
 
 | Package | Role |
 |---|---|
-| `cmd/tether` | CLI: `serve`, `ca`, `version`. Parses config, wires logging and signals. |
+| `cmd/tether` | CLI: `serve`, `mcp` (stdio bridge), `ca`, `version`. Parses config, wires logging and signals. |
 | `internal/app` | Assembles a running Tether from a `Config`: Chrome, core, faces, server. Used by the CLI and the integration tests. |
 | `internal/cdp` | The only package that speaks CDP. `Browser` and `Tab` interfaces; `Chrome` implementation over a single flattened websocket; endpoint discovery and `Launch`. `cdptest` holds fakes. |
 | `internal/session` | `Session` = one page target. `Manager` resolves requests to sessions, opens/adopts/closes tabs, reaps idle ones, and serialises work per tab. |
@@ -60,7 +60,8 @@ flowchart LR
 | `internal/webdriver` | W3C WebDriver face (see [WEBDRIVER.md](WEBDRIVER.md)). |
 | `internal/api` | Control plane: health, whoami, tabs, tab policies, eval, CA download. |
 | `internal/server` | Listener, routing, per-token auth, loopback guard, graceful shutdown, exposure checks. |
-| `internal/mcp`, `internal/remote` | Planned faces, mounted and answering `501` today. |
+| `internal/mcp` | MCP face: Streamable HTTP transport, per-agent sessions, browser tools, and the stdio bridge (see [MCP.md](MCP.md)). |
+| `internal/remote` | Planned face, mounted and answering `501` today. |
 | `internal/certs`, `internal/logx`, `internal/config`, `internal/version`, `internal/httpx` | Supporting pieces. |
 
 ## The session model
@@ -148,7 +149,7 @@ proxy auth and Tether control headers never reach the page.
 |---|---|---|
 | HTTP proxy | **Shipping** | `Sessions.Resolve`, `Core.Do` |
 | WebDriver | **Shipping** | `Sessions.Create/Get/Close`, `Core.Navigate`, `cdp.Tab` primitives |
-| MCP server | Stub (`/mcp` → 501) | Will map tools (`navigate`, `read_page`, `click`, `type`, `eval`, `screenshot`, `tabs`) onto the same calls. Each agent authenticates with its own token, so per-token policies and tab ownership apply unchanged. Streamable HTTP transport on the same listener, so it inherits auth and Tailscale exposure. |
+| MCP server | **Shipping** | `Sessions.Create/Get/Close`, `Core.Navigate`, `Core.Eval`, `Core.Do` (fetch mode), `core.Policy`, `cdp.Tab` primitives. Streamable HTTP on the same listener, so it inherits auth and Tailscale exposure. Each MCP session tracks one current tab and the tabs it opened; `core.Policy` is checked against the page's current URL before every page tool. Each agent authenticates with its own token, so per-token policies and tab ownership apply unchanged. |
 | Remote UI | Stub (`/remote` → 501) | Will stream a tab with `Page.startScreencast` (WebRTC later) and forward input through `cdp.Tab.Click`/`Key`, letting a person watch or take over exactly the tab an agent is driving. |
 
 Every face implements `core.Face` (`Name()` + `http.Handler`) and is mounted

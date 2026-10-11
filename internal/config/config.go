@@ -43,6 +43,7 @@ type Config struct {
 	PolicyFile   string
 	DataDir      string
 	NoMITM       bool
+	MCP          bool
 
 	LogLevel  string
 	LogFormat string
@@ -115,6 +116,7 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 	str(&c.PolicyFile, "policy-file", "TETHER_POLICY_FILE", "", "JSON policy file: global rules plus per-token rules (see SECURITY.md)")
 	str(&c.DataDir, "data-dir", "TETHER_DATA_DIR", DefaultDataDir(), "where the local CA and launched profile live")
 	boolean(&c.NoMITM, "no-mitm", "TETHER_NO_MITM", false, "refuse HTTPS CONNECT instead of intercepting it with the local CA")
+	boolean(&c.MCP, "mcp", "TETHER_MCP", true, "serve the MCP face for AI agents at /mcp")
 	str(&c.LogLevel, "log-level", "TETHER_LOG_LEVEL", "info", "debug, info, warn or error")
 	str(&c.LogFormat, "log-format", "TETHER_LOG_FORMAT", "text", "text or json")
 

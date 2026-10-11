@@ -398,6 +398,10 @@ func (t *chromeTab) ResponseBody(ctx context.Context, requestID string) ([]byte,
 	return []byte(res.Body), nil
 }
 
+// screenshotProbe is how long Screenshot waits before assuming the tab is
+// a hidden, idle background tab that will never produce a frame.
+const screenshotProbe = 2 * time.Second
+
 func (t *chromeTab) Screenshot(ctx context.Context, clip *Rect) ([]byte, error) {
 	params := map[string]any{"format": "png"}
 	if clip != nil {
@@ -406,6 +410,22 @@ func (t *chromeTab) Screenshot(ctx context.Context, clip *Rect) ([]byte, error) 
 		}
 		params["captureBeyondViewport"] = true
 	}
+	// Chrome composites a background tab only when something in it changes,
+	// so capturing an idle one waits forever. Try briefly, then do what
+	// ChromeDriver does: bring the tab to the front and capture again.
+	pctx, cancel := context.WithTimeout(ctx, screenshotProbe)
+	png, err := t.capture(pctx, params)
+	cancel()
+	if err == nil || ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded) {
+		return png, err
+	}
+	if err := t.call(ctx, "Page.bringToFront", nil, nil); err != nil {
+		return nil, err
+	}
+	return t.capture(ctx, params)
+}
+
+func (t *chromeTab) capture(ctx context.Context, params map[string]any) ([]byte, error) {
 	var res struct {
 		Data []byte `json:"data"` // base64 in JSON
 	}

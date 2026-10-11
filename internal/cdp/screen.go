@@ -156,7 +156,24 @@ func (t *chromeTab) Screencast(ctx context.Context, opts ScreencastOptions, fn f
 	// The dispatcher goroutine must never block, so it only parks the
 	// newest frame here; older unread frames are simply superseded.
 	latest := make(chan rawFrame, 1)
+	// A main-frame navigation can swap the page's renderer, which ends the
+	// screencast; restart says to ask for it again.
+	restart := make(chan struct{}, 1)
 	unsub := t.b.c.subscribe(t.session, func(e Event) {
+		if e.Method == "Page.frameNavigated" {
+			var p struct {
+				Frame struct {
+					ParentID string `json:"parentId"`
+				} `json:"frame"`
+			}
+			if json.Unmarshal(e.Params, &p) == nil && p.Frame.ParentID == "" {
+				select {
+				case restart <- struct{}{}:
+				default:
+				}
+			}
+			return
+		}
 		if e.Method != "Page.screencastFrame" {
 			return
 		}
@@ -178,13 +195,24 @@ func (t *chromeTab) Screencast(ctx context.Context, opts ScreencastOptions, fn f
 	})
 	defer unsub()
 
-	if err := t.call(ctx, "Page.startScreencast", map[string]any{
-		"format":    "jpeg",
-		"quality":   opts.Quality,
-		"maxWidth":  opts.MaxWidth,
-		"maxHeight": opts.MaxHeight,
-	}, nil); err != nil {
-		return err
+	// Starting can fail transiently, e.g. "Not attached to an active page"
+	// while a navigation commits. Keyframes keep the picture coming and the
+	// start is retried on every keyframe tick until it takes.
+	started := false
+	start := func() {
+		err := t.call(ctx, "Page.startScreencast", map[string]any{
+			"format":    "jpeg",
+			"quality":   opts.Quality,
+			"maxWidth":  opts.MaxWidth,
+			"maxHeight": opts.MaxHeight,
+		}, nil)
+		started = err == nil
+	}
+	start()
+	if !started {
+		if _, err := t.Info(ctx); errors.Is(err, ErrNoSuchTab) {
+			return ErrNoSuchTab
+		}
 	}
 	defer func() {
 		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
@@ -219,7 +247,12 @@ func (t *chromeTab) Screencast(ctx context.Context, opts ScreencastOptions, fn f
 			_ = t.call(ctx, "Page.screencastFrameAck", map[string]any{"sessionId": f.SessionID}, nil)
 		case <-opts.Refresh:
 			activeUntil = time.Now().Add(activeFor)
+		case <-restart:
+			start()
 		case <-keyframe.C:
+			if !started {
+				start()
+			}
 			every := opts.Keyframe
 			if time.Now().Before(activeUntil) {
 				every = activeKeyframe

@@ -3,8 +3,10 @@ package cdp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 )
 
@@ -114,7 +116,23 @@ func (b *Chrome) AttachTab(ctx context.Context, id string) (Tab, error) {
 	if info.TargetInfo.Type != "page" {
 		return nil, fmt.Errorf("%w: %s is a %s", ErrNoSuchTab, id, info.TargetInfo.Type)
 	}
-	return b.attach(ctx, id)
+	t, err := b.attach(ctx, id)
+	if err != nil && closing(err) {
+		// The tab was closing as we attached.
+		return nil, fmt.Errorf("%w: %s: %w", ErrNoSuchTab, id, err)
+	}
+	return t, err
+}
+
+// closing reports whether err means the target or its session went away
+// mid-call.
+func closing(err error) bool {
+	var pe *ProtocolError
+	if !errors.As(err, &pe) {
+		return false
+	}
+	m := strings.ToLower(pe.Message)
+	return strings.Contains(m, "session with given id not found") || strings.Contains(m, "no target with given id")
 }
 
 func (b *Chrome) attach(ctx context.Context, id string) (*chromeTab, error) {

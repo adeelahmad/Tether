@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/adeelahmad/tether/internal/cdp"
+	"github.com/adeelahmad/tether/internal/logx"
 )
 
 // ErrTabGone is returned when a client references a tab that is closed,
@@ -220,7 +221,7 @@ func (m *Manager) create(ctx context.Context, domain string) (*Session, error) {
 		return nil, fmt.Errorf("session: open tab: %w", err)
 	}
 	s := m.track(tab, domain, true)
-	m.log.Info("tab opened", "tab", s.ID, "domain", domain)
+	m.log.Info("tab opened", "tab", logx.Clean(s.ID), "domain", logx.Clean(domain))
 	return s, nil
 }
 
@@ -265,7 +266,7 @@ func (m *Manager) Get(ctx context.Context, id string) (*Session, error) {
 	s = &Session{ID: id, Tab: tab, Created: time.Now(), sem: make(chan struct{}, 1)}
 	s.Touch()
 	m.byID[id] = s
-	m.log.Info("tab adopted", "tab", id)
+	m.log.Info("tab adopted", "tab", logx.Clean(id))
 	return s, nil
 }
 

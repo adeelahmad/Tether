@@ -182,14 +182,14 @@ func (p *Proxy) serveTarget(w http.ResponseWriter, r *http.Request, target *url.
 	}
 	w.WriteHeader(status)
 	_, _ = w.Write(resp.Body)
-	p.log.Info("proxied", "method", r.Method, "url", logx.SafeURL(target), "tab", s.ID,
-		"session", string(src), "status", status, "bytes", len(resp.Body), "dur", time.Since(start).Round(time.Millisecond))
+	p.log.Info("proxied", "method", logx.Clean(r.Method), "url", logx.SafeURL(target), "tab", logx.Clean(s.ID),
+		"session", logx.Clean(string(src)), "status", status, "bytes", len(resp.Body), "dur", time.Since(start).Round(time.Millisecond))
 }
 
 func (p *Proxy) fail(w http.ResponseWriter, r *http.Request, target *url.URL, err error, start time.Time) {
 	status, code := core.Classify(err)
-	p.log.Warn("proxy request failed", "method", r.Method, "url", logx.SafeURL(target),
-		"status", status, "code", code, "err", err, "dur", time.Since(start).Round(time.Millisecond))
+	p.log.Warn("proxy request failed", "method", logx.Clean(r.Method), "url", logx.SafeURL(target),
+		"status", status, "code", code, "err", logx.Clean(err.Error()), "dur", time.Since(start).Round(time.Millisecond))
 	httpx.WriteError(w, status, code, err.Error())
 }
 

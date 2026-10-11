@@ -49,3 +49,16 @@ func TestSafeURL(t *testing.T) {
 		t.Error("nil URL")
 	}
 }
+
+func TestClean(t *testing.T) {
+	tests := map[string]string{
+		"tab-1":                  "tab-1",
+		"x\r\nlevel=ERROR msg=y": "xlevel=ERROR msg=y",
+		"a\nb\rc":                "abc",
+	}
+	for in, want := range tests {
+		if got := Clean(in); got != want {
+			t.Errorf("Clean(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

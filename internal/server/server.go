@@ -15,6 +15,7 @@ import (
 
 	"github.com/adeelahmad/tether/internal/core"
 	"github.com/adeelahmad/tether/internal/httpx"
+	"github.com/adeelahmad/tether/internal/logx"
 	"github.com/adeelahmad/tether/internal/proxy"
 	"github.com/adeelahmad/tether/internal/version"
 )
@@ -124,7 +125,7 @@ func recoverer(lg *slog.Logger, next http.Handler) http.Handler {
 				if v == http.ErrAbortHandler { //nolint:errorlint // sentinel compared by identity
 					panic(v)
 				}
-				lg.Error("panic serving request", "method", r.Method, "path", r.URL.Path, "panic", v)
+				lg.Error("panic serving request", "method", logx.Clean(r.Method), "path", logx.Clean(r.URL.Path), "panic", v)
 				httpx.WriteError(w, http.StatusInternalServerError, core.CodeInternal, "internal error")
 			}
 		}()

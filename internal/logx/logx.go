@@ -64,5 +64,12 @@ func SafeURL(u *url.URL) string {
 	}
 	c.Fragment = ""
 	c.RawFragment = ""
-	return c.String()
+	return Clean(c.String())
+}
+
+// Clean strips CR and LF from a client-supplied value before it is logged,
+// so it can never start a new log line whatever handler is in use.
+func Clean(s string) string {
+	s = strings.ReplaceAll(s, "\n", "")
+	return strings.ReplaceAll(s, "\r", "")
 }

@@ -20,6 +20,7 @@ import (
 
 	"github.com/adeelahmad/tether/internal/cdp"
 	"github.com/adeelahmad/tether/internal/core"
+	"github.com/adeelahmad/tether/internal/logx"
 	"github.com/adeelahmad/tether/internal/session"
 	"github.com/adeelahmad/tether/internal/version"
 )
@@ -208,7 +209,7 @@ func (h *Handler) cmd(fn command) http.Handler {
 		defer unlock()
 		v, err := fn(ctx, ws, r, body)
 		if err != nil {
-			h.log.Debug("command failed", "path", r.URL.Path, "err", err)
+			h.log.Debug("command failed", "path", logx.Clean(r.URL.Path), "err", logx.Clean(err.Error()))
 			writeError(w, err)
 			return
 		}
@@ -339,7 +340,7 @@ func (h *Handler) newSession(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 
 	product, _ := h.core.Browser.Version(ctx)
-	h.log.Info("webdriver session created", "tab", s.ID, "attached", opts.TabID != "")
+	h.log.Info("webdriver session created", "tab", logx.Clean(s.ID), "attached", opts.TabID != "")
 	writeValue(w, http.StatusOK, map[string]any{
 		"sessionId": s.ID,
 		"capabilities": map[string]any{

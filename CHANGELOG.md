@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Relicensed from MIT to GPL-3.0-or-later.
+- Connections are now accepted by a front door built on
+  [snail007/goproxy](https://github.com/snail007/goproxy): its HTTP decoder
+  classifies each connection (CONNECT, absolute-form proxy request, or a
+  request for Tether's own endpoints) before `net/http` serves it.
+
 ### Added
 
 - Tab-session core: one session per real Chrome tab, resolved by

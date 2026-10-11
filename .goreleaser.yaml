@@ -71,7 +71,7 @@ dockers_v2:
       org.opencontainers.image.version: "{{ .Version }}"
       org.opencontainers.image.revision: "{{ .FullCommit }}"
       org.opencontainers.image.source: "{{ .GitURL }}"
-      org.opencontainers.image.licenses: MIT
+      org.opencontainers.image.licenses: GPL-3.0-or-later
 
 homebrew_casks:
   - name: tether
@@ -82,7 +82,7 @@ homebrew_casks:
     directory: Casks
     homepage: https://github.com/adeelahmad/tether
     description: Your logged-in Chrome as a proxy and WebDriver endpoint, from anywhere. No extension.
-    license: MIT
+    license: GPL-3.0-or-later
     skip_upload: auto
     hooks:
       post:

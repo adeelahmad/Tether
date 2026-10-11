@@ -17,6 +17,7 @@ import (
 	"github.com/adeelahmad/tether/internal/certs"
 	"github.com/adeelahmad/tether/internal/config"
 	"github.com/adeelahmad/tether/internal/core"
+	"github.com/adeelahmad/tether/internal/frontdoor"
 	"github.com/adeelahmad/tether/internal/mcp"
 	"github.com/adeelahmad/tether/internal/proxy"
 	"github.com/adeelahmad/tether/internal/remote"
@@ -113,8 +114,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 		Faces:     map[string]core.Face{mcp.Prefix: mcpFace, remote.Prefix: ui},
 	})
 
-	var lc net.ListenConfig
-	if a.listener, err = lc.Listen(ctx, "tcp", cfg.Addr); err != nil {
+	if a.listener, err = frontdoor.Listen(ctx, cfg.Addr, log); err != nil {
 		return nil, err
 	}
 	a.Addr = a.listener.Addr()

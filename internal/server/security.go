@@ -14,6 +14,7 @@ import (
 
 	"github.com/adeelahmad/tether/internal/core"
 	"github.com/adeelahmad/tether/internal/httpx"
+	"github.com/adeelahmad/tether/internal/policy"
 	"github.com/adeelahmad/tether/internal/proxy"
 )
 
@@ -24,12 +25,12 @@ var ErrPublicWithoutToken = errors.New("refusing to listen on a non-loopback add
 
 // CheckBind enforces the exposure rule: loopback is always fine; anything
 // else needs a token or an explicit --insecure-allow-public.
-func CheckBind(ctx context.Context, addr, token string, insecureAllowPublic bool) error {
+func CheckBind(ctx context.Context, addr string, hasToken, insecureAllowPublic bool) error {
 	loop, err := IsLoopbackAddr(ctx, addr)
 	if err != nil {
 		return err
 	}
-	if loop || token != "" || insecureAllowPublic {
+	if loop || hasToken || insecureAllowPublic {
 		return nil
 	}
 	return ErrPublicWithoutToken
@@ -63,30 +64,49 @@ func IsLoopbackAddr(ctx context.Context, addr string) (bool, error) {
 	return len(ips) > 0, nil
 }
 
-// authenticator checks the shared bearer token. Proxy requests carry it in
-// Proxy-Authorization (Bearer, or Basic with the token as password, which
-// is what `curl -x http://tether:TOKEN@host:port` sends); everything else
-// carries it in Authorization.
+// authenticator checks bearer tokens and attaches the matching principal
+// to the request context, where the session manager and the policy read
+// it. Proxy requests carry the token in Proxy-Authorization (Bearer, or
+// Basic with the token as password, which is what
+// `curl -x http://tether:TOKEN@host:port` sends); everything else carries
+// it in Authorization.
 type authenticator struct {
-	sum [32]byte
+	creds []credential
 }
 
-func newAuthenticator(token string) *authenticator {
-	if token == "" {
+type credential struct {
+	sum [32]byte
+	p   *policy.Principal
+}
+
+func newAuthenticator(creds []policy.Credential) *authenticator {
+	if len(creds) == 0 {
 		return nil
 	}
-	return &authenticator{sum: sha256.Sum256([]byte(token))}
+	a := &authenticator{}
+	for _, c := range creds {
+		a.creds = append(a.creds, credential{sum: sha256.Sum256([]byte(c.Token)), p: c.Principal})
+	}
+	return a
 }
 
-func (a *authenticator) match(candidate string) bool {
+// match compares candidate against every token in constant time, so the
+// response time says nothing about which token, if any, was close.
+func (a *authenticator) match(candidate string) *policy.Principal {
 	s := sha256.Sum256([]byte(candidate))
-	return subtle.ConstantTimeCompare(s[:], a.sum[:]) == 1
+	var found *policy.Principal
+	for _, c := range a.creds {
+		if subtle.ConstantTimeCompare(s[:], c.sum[:]) == 1 {
+			found = c.p
+		}
+	}
+	return found
 }
 
-func (a *authenticator) check(header string) bool {
+func (a *authenticator) check(header string) *policy.Principal {
 	scheme, cred, ok := strings.Cut(strings.TrimSpace(header), " ")
 	if !ok {
-		return false
+		return nil
 	}
 	cred = strings.TrimSpace(cred)
 	switch strings.ToLower(scheme) {
@@ -95,12 +115,15 @@ func (a *authenticator) check(header string) bool {
 	case "basic":
 		raw, err := base64.StdEncoding.DecodeString(cred)
 		if err != nil {
-			return false
+			return nil
 		}
 		_, pass, ok := strings.Cut(string(raw), ":")
-		return ok && a.match(pass)
+		if !ok {
+			return nil
+		}
+		return a.match(pass)
 	}
-	return false
+	return nil
 }
 
 func (a *authenticator) wrap(next http.Handler, uiPrefix string) http.Handler {
@@ -114,18 +137,19 @@ func (a *authenticator) wrap(next http.Handler, uiPrefix string) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		var p *policy.Principal
 		if isProxy {
-			if !a.check(r.Header.Get("Proxy-Authorization")) {
+			if p = a.check(r.Header.Get("Proxy-Authorization")); p == nil {
 				w.Header().Set("Proxy-Authenticate", `Basic realm="tether"`)
 				httpx.WriteError(w, http.StatusProxyAuthRequired, core.CodeUnauthorized, "proxy authentication required")
 				return
 			}
 			r.Header.Del("Proxy-Authorization")
-		} else if !a.check(r.Header.Get("Authorization")) {
+		} else if p = a.check(r.Header.Get("Authorization")); p == nil {
 			a.deny(w)
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(policy.WithPrincipal(r.Context(), p)))
 	})
 }
 

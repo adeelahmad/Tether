@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/sha256"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/adeelahmad/tether/internal/core"
+	"github.com/adeelahmad/tether/internal/policy"
 )
 
 func newUIServer(token string, guard bool) http.Handler {
@@ -123,7 +125,7 @@ func TestUILogin(t *testing.T) {
 	}
 
 	// A cookie minted for another token is worthless.
-	other := newAuthenticator("another-token-0123456789").uiCookieValue()
+	other := uiCookieValue(credential{sum: sha256.Sum256([]byte("another-token-0123456789"))})
 	r := httptest.NewRequest("GET", "/remote/api/tabs", nil)
 	r.AddCookie(&http.Cookie{Name: UICookieName, Value: other})
 	w = httptest.NewRecorder()
@@ -186,5 +188,37 @@ func TestUICookieSecureOverHTTPS(t *testing.T) {
 	}
 	if c := login(t, h, token, nil).Result().Cookies(); len(c) != 1 || c[0].Secure {
 		t.Fatalf("login over plain http must not be Secure: %+v", c)
+	}
+}
+
+// Each token gets its own UI cookie, and requests made with it carry that
+// token's principal, so the UI is held to the token's rules and tabs.
+func TestUILoginCarriesPrincipal(t *testing.T) {
+	uiLoginDelay = 0
+	agent := &policy.Principal{Name: "agent"}
+	whoami := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(policy.FromContext(r.Context()).Name))
+	})
+	h := New(Options{
+		Token:       "admin-token-0123456789",
+		Credentials: []policy.Credential{{Token: "agent-token-0123456789", Principal: agent}},
+		Faces:       map[string]core.Face{"/remote": face{whoami}},
+		UIPrefix:    "/remote",
+	}).Handler()
+
+	for token, want := range map[string]string{"agent-token-0123456789": "agent", "admin-token-0123456789": policy.DefaultTokenName} {
+		w := login(t, h, token, nil)
+		if w.Code != 303 {
+			t.Fatalf("login %s: %d", want, w.Code)
+		}
+		r := httptest.NewRequest("GET", "/remote/api/tabs", nil)
+		for _, c := range w.Result().Cookies() {
+			r.AddCookie(c)
+		}
+		rw := httptest.NewRecorder()
+		h.ServeHTTP(rw, r)
+		if rw.Code != 200 || rw.Body.String() != want {
+			t.Fatalf("cookie for %s: %d %q", want, rw.Code, rw.Body.String())
+		}
 	}
 }

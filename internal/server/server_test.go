@@ -9,23 +9,25 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/adeelahmad/tether/internal/policy"
 )
 
 func TestCheckBind(t *testing.T) {
 	tests := []struct {
 		addr     string
-		token    string
+		token    bool
 		insecure bool
 		wantErr  error
 	}{
-		{"127.0.0.1:8787", "", false, nil},
-		{"[::1]:8787", "", false, nil},
-		{"localhost:8787", "", false, nil},
-		{"0.0.0.0:8787", "", false, ErrPublicWithoutToken},
-		{":8787", "", false, ErrPublicWithoutToken},
-		{"100.101.102.103:8787", "", false, ErrPublicWithoutToken},
-		{"0.0.0.0:8787", "a-long-enough-token", false, nil},
-		{"0.0.0.0:8787", "", true, nil},
+		{"127.0.0.1:8787", false, false, nil},
+		{"[::1]:8787", false, false, nil},
+		{"localhost:8787", false, false, nil},
+		{"0.0.0.0:8787", false, false, ErrPublicWithoutToken},
+		{":8787", false, false, ErrPublicWithoutToken},
+		{"100.101.102.103:8787", false, false, ErrPublicWithoutToken},
+		{"0.0.0.0:8787", true, false, nil},
+		{"0.0.0.0:8787", false, true, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.addr, func(t *testing.T) {
@@ -35,7 +37,7 @@ func TestCheckBind(t *testing.T) {
 			}
 		})
 	}
-	if err := CheckBind(context.Background(), "no-port", "", false); err == nil {
+	if err := CheckBind(context.Background(), "no-port", false, false); err == nil {
 		t.Fatal("expected error for malformed addr")
 	}
 }
@@ -191,5 +193,53 @@ func TestServeGracefulShutdown(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("serve: %v", err)
+	}
+}
+
+func TestPerTokenPrincipals(t *testing.T) {
+	agent := &policy.Principal{Name: "agent"}
+	var seen *policy.Principal
+	capture := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = policy.FromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+	h := New(Options{
+		Token:       "admin-token-0123456789",
+		Credentials: []policy.Credential{{Token: "agent-token-0123456789", Principal: agent}},
+		Proxy:       capture,
+		API:         capture,
+	}).Handler()
+
+	tests := []struct {
+		name, target, header, value string
+		wantStatus                  int
+		wantName                    string
+	}{
+		{"agent api", "/tether/v1/tabs", "Authorization", "Bearer agent-token-0123456789", 200, "agent"},
+		{"admin api", "/tether/v1/tabs", "Authorization", "Bearer admin-token-0123456789", 200, policy.DefaultTokenName},
+		{"agent proxy", "http://example.com/", "Proxy-Authorization", basic("tether", "agent-token-0123456789"), 200, "agent"},
+		{"unknown", "/tether/v1/tabs", "Authorization", "Bearer someone-else-0123456789", 401, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			seen = nil
+			r := httptest.NewRequest("GET", tt.target, nil)
+			r.Header.Set(tt.header, tt.value)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status %d, want %d", w.Code, tt.wantStatus)
+			}
+			got := ""
+			if seen != nil {
+				got = seen.Name
+			}
+			if got != tt.wantName {
+				t.Fatalf("principal %q, want %q", got, tt.wantName)
+			}
+		})
+	}
+	if seen := (*authenticator)(nil); newAuthenticator(nil) != seen {
+		t.Fatal("no credentials means no authenticator")
 	}
 }

@@ -2,7 +2,6 @@ package cdptest
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/adeelahmad/tether/internal/cdp"
@@ -55,17 +54,6 @@ func (t *Tab) alive() bool {
 	return t.b.tabs[t.id] == t
 }
 
-// Mouse records e.
-func (t *Tab) Mouse(_ context.Context, e cdp.MouseEvent) error {
-	if err := e.Validate(); err != nil {
-		return err
-	}
-	t.mu.Lock()
-	t.Mice = append(t.Mice, e)
-	t.mu.Unlock()
-	return nil
-}
-
 // InsertText records text.
 func (t *Tab) InsertText(_ context.Context, text string) error {
 	t.mu.Lock()
@@ -95,53 +83,15 @@ func (t *Tab) WatchDialogs(fn func(cdp.Dialog)) (cancel func()) {
 	}
 }
 
-// OpenDialog simulates the page opening a JavaScript dialog.
-func (t *Tab) OpenDialog(d cdp.Dialog) {
-	t.mu.Lock()
-	fns := append([]func(cdp.Dialog){}, t.dialogFns...)
-	t.dialog = &d
-	t.mu.Unlock()
-	for _, fn := range fns {
-		if fn != nil {
-			fn(d)
-		}
-	}
-}
-
-// HandleDialog records the answer and closes the dialog.
-func (t *Tab) HandleDialog(_ context.Context, accept bool, promptText string) error {
-	t.mu.Lock()
-	if t.dialog == nil {
-		t.mu.Unlock()
-		return errors.New("no dialog is showing")
-	}
-	t.dialog = nil
-	t.DialogAnswers = append(t.DialogAnswers, DialogAnswer{accept, promptText})
-	fns := append([]func(cdp.Dialog){}, t.dialogFns...)
-	t.mu.Unlock()
-	for _, fn := range fns {
-		if fn != nil {
-			fn(cdp.Dialog{Closed: true})
-		}
-	}
-	return nil
-}
-
-// DialogAnswer is one HandleDialog call.
-type DialogAnswer struct {
-	Accept bool
-	Text   string
-}
-
-// Answers returns the recorded dialog answers.
-func (t *Tab) Answers() []DialogAnswer {
+// Answered returns a copy of the recorded dialog answers.
+func (t *Tab) Answered() []DialogAnswer {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return append([]DialogAnswer(nil), t.DialogAnswers...)
+	return append([]DialogAnswer(nil), t.Answers...)
 }
 
-// Input returns copies of the recorded input.
-func (t *Tab) Input() (keys []cdp.KeyEvent, mice []cdp.MouseEvent, texts []string) {
+// Recorded returns copies of the recorded keys, mouse events and text.
+func (t *Tab) Recorded() (keys []cdp.KeyEvent, mice []cdp.MouseEvent, texts []string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]cdp.KeyEvent(nil), t.Keys...), append([]cdp.MouseEvent(nil), t.Mice...), append([]string(nil), t.Texts...)

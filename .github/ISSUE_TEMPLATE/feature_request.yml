@@ -19,7 +19,7 @@ body:
       options:
         - HTTP proxy
         - WebDriver
-        - MCP (planned)
+        - MCP
         - Remote UI (planned)
         - Core / sessions
         - Docs / tooling

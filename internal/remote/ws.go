@@ -95,6 +95,12 @@ func (u *UI) serveWS(w http.ResponseWriter, r *http.Request) {
 		u.fail(w, fmt.Errorf("%w: this browser backend cannot stream tabs", errNotImplemented))
 		return
 	}
+	// Clicks and typing in the viewer can navigate, so a restricted tab
+	// gets its browser-side guard before anyone drives it.
+	if err := u.core.Prepare(r.Context(), s); err != nil {
+		u.fail(w, err)
+		return
+	}
 	// Accept checks that Origin matches Host, so other sites cannot open a
 	// socket to a tab even if they could reach the listener.
 	opts := &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled}
@@ -285,7 +291,7 @@ func (vc *viewerConn) handle(ctx context.Context, m clientMsg) error {
 		if err := e.Validate(); err != nil {
 			return errors.Join(core.ErrBadRequest, err)
 		}
-		return vc.scr.Mouse(ictx, e)
+		return vc.s.Tab.Mouse(ictx, e)
 	case "key":
 		k, err := keyEvent(m)
 		if err != nil {
@@ -309,7 +315,11 @@ func (vc *viewerConn) handle(ctx context.Context, m clientMsg) error {
 	case "front":
 		return vc.scr.BringToFront(ictx)
 	case "dialog":
-		return vc.scr.HandleDialog(ictx, m.Accept, m.Text)
+		var text *string
+		if m.Text != "" {
+			text = &m.Text
+		}
+		return vc.s.Tab.HandleDialog(ictx, m.Accept, text)
 	case "nav", "back", "forward", "reload":
 		go vc.navigate(ctx, m)
 		return nil

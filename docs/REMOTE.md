@@ -19,13 +19,13 @@ open http://127.0.0.1:8787/remote/     # or just http://127.0.0.1:8787/ in a bro
 
 | | |
 |---|---|
-| **Every tab** | The sidebar lists every page in Chrome, not only Tether's. Tabs Tether opened are marked *Tether*; your own tabs that a client has attached to are marked *In use*. Picking one of your own tabs attaches to it but never closes it. |
+| **Every tab** | The sidebar lists every page in Chrome, not only Tether's. Tabs Tether opened are marked *Tether*; your own tabs that a client has attached to are marked *In use*. Picking one of your own tabs attaches to it but never closes it. A non-admin token ([POLICIES.md](POLICIES.md)) sees only the tabs it opened. |
 | **Live video** | Frames come from CDP `Page.startScreencast` as JPEG over a websocket; one stream per tab is shared by every viewer. |
 | **Mouse** | Move, click, double/triple click, right and middle click, drag, and wheel/trackpad scrolling, mapped to the tab's CSS pixels whatever size the video is shown at. Touch screens tap and drag. |
 | **Keyboard** | Real key events (so shortcuts, arrows, Tab, Enter and Escape behave), IME composition, and mobile on-screen keyboards (the ⌨ button). Ctrl/⌘ + A, C, X, Z, Y carry editing commands so they work on macOS Chrome too. |
 | **Clipboard** | Paste (Ctrl/⌘+V) types your local clipboard into the tab. Copy (Ctrl/⌘+C) copies the tab's selection to your local clipboard. |
 | **Dialogs** | `alert`, `confirm`, `prompt` and "leave this page?" are drawn by Chrome outside the page, so Tether relays them to the UI and sends your answer back. |
-| **Navigation** | Address bar (URLs, bare hosts like `github.com`, or a search), back, forward, reload, new tab, close tab. Address-bar navigation goes through the core, so `--allow-domains` applies. |
+| **Navigation** | Address bar (URLs, bare hosts like `github.com`, or a search), back, forward, reload, new tab, close tab. Address-bar navigation goes through the core, and restricted tabs are guarded in the browser, so global, token and tab rules apply. |
 | **Watch only** | The pointer toggle stops sending input, so you can watch an agent work without nudging it. |
 | **Bring to front** | Activates the tab in Chrome. See *Smoothness* below. |
 | **Full screen**, deep links (`/remote/#tab=<id>`), automatic reconnects, light and dark themes, phone layout. |
@@ -35,7 +35,7 @@ open http://127.0.0.1:8787/remote/     # or just http://127.0.0.1:8787/ in a bro
 On loopback without a token (the default), there is nothing to sign in to:
 the same Host/Origin guard that protects the rest of Tether applies.
 
-With `--token`, browsers can't attach a bearer header to a page load, so the
+With `--token` or a policy file, browsers can't attach a bearer header to a page load, so the
 UI has a small sign-in page at `/remote/login`. Enter the token once; Tether
 answers with a cookie that is:
 
@@ -44,7 +44,9 @@ answers with a cookie that is:
 - **scoped to `/remote`** — it is accepted only for the UI, never for the
   proxy, the control API or WebDriver;
 - **an HMAC of the token**, not the token — changing the token signs every
-  browser out.
+  browser out;
+- **per token** — signing in with a policy-file token makes the UI act as
+  that token: its tabs, its rules, its `scripts` setting.
 
 Password managers can store the token (the form is a normal username +
 password form). *Sign out* clears the cookie. Scripts can still call the UI's

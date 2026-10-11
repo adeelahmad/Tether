@@ -32,6 +32,7 @@ import (
 	"github.com/adeelahmad/tether/internal/cdp"
 	"github.com/adeelahmad/tether/internal/core"
 	"github.com/adeelahmad/tether/internal/httpx"
+	"github.com/adeelahmad/tether/internal/policy"
 	"github.com/adeelahmad/tether/internal/session"
 	"github.com/adeelahmad/tether/internal/version"
 )
@@ -165,8 +166,10 @@ type tabView struct {
 }
 
 // listTabs lists every page in Chrome, not just Tether's sessions: the
-// point of the UI is to reach any tab of the real browser.
+// point of the UI is to reach any tab of the real browser. A non-admin
+// token sees only the tabs it opened, as in the control API.
 func (u *UI) listTabs(w http.ResponseWriter, r *http.Request) {
+	p := policy.FromContext(r.Context())
 	tabs, err := u.core.Browser.Tabs(r.Context())
 	if err != nil {
 		u.fail(w, err)
@@ -178,8 +181,12 @@ func (u *UI) listTabs(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]tabView, 0, len(tabs))
 	for _, t := range tabs {
+		i, ok := known[t.ID]
+		if !p.CanAdopt() && (!ok || !p.CanUse(i.Owner)) {
+			continue
+		}
 		v := tabView{ID: t.ID, URL: t.URL, Title: t.Title}
-		if i, ok := known[t.ID]; ok {
+		if ok {
 			v.Session, v.Owned, v.Domain = true, i.Owned, i.Domain
 		}
 		out = append(out, v)

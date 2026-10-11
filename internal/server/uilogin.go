@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/adeelahmad/tether/internal/policy"
 )
 
 // UI login. Browsers cannot attach a bearer token to page loads, image
@@ -28,18 +30,37 @@ const UICookieName = "tether_ui"
 // uiLoginDelay slows down token guessing on the login form.
 var uiLoginDelay = 500 * time.Millisecond
 
-func (a *authenticator) uiCookieValue() string {
-	m := hmac.New(sha256.New, a.sum[:])
+// uiCookieValue is the cookie for one credential: an HMAC of its token,
+// so each token's cookie is distinct and maps back to its principal.
+func uiCookieValue(c credential) string {
+	m := hmac.New(sha256.New, c.sum[:])
 	m.Write([]byte("tether-remote-ui-v1"))
 	return hex.EncodeToString(m.Sum(nil))
 }
 
-func (a *authenticator) uiCookieOK(r *http.Request) bool {
-	c, err := r.Cookie(UICookieName)
+// uiCookie returns the principal whose login cookie r carries, or nil.
+// Every credential is compared, in constant time.
+func (a *authenticator) uiCookie(r *http.Request) *policy.Principal {
+	ck, err := r.Cookie(UICookieName)
 	if err != nil {
-		return false
+		return nil
 	}
-	return hmac.Equal([]byte(c.Value), []byte(a.uiCookieValue()))
+	var found *policy.Principal
+	for _, c := range a.creds {
+		if hmac.Equal([]byte(ck.Value), []byte(uiCookieValue(c))) {
+			found = c.p
+		}
+	}
+	return found
+}
+
+func (a *authenticator) credentialFor(p *policy.Principal) (credential, bool) {
+	for _, c := range a.creds {
+		if c.p == p {
+			return c, true
+		}
+	}
+	return credential{}, false
 }
 
 func underPrefix(path, prefix string) bool {
@@ -71,8 +92,16 @@ func uiGate(a *authenticator, prefix string, w http.ResponseWriter, r *http.Requ
 		http.Redirect(w, r, prefix+"/login", http.StatusSeeOther)
 		return
 	}
-	if a == nil || a.check(r.Header.Get("Authorization")) || a.uiCookieOK(r) {
+	if a == nil {
 		next.ServeHTTP(w, r)
+		return
+	}
+	p := a.check(r.Header.Get("Authorization"))
+	if p == nil {
+		p = a.uiCookie(r)
+	}
+	if p != nil {
+		next.ServeHTTP(w, r.WithContext(policy.WithPrincipal(r.Context(), p)))
 		return
 	}
 	if r.Method == http.MethodGet && (r.URL.Path == prefix || r.URL.Path == prefix+"/") {
@@ -85,7 +114,7 @@ func uiGate(a *authenticator, prefix string, w http.ResponseWriter, r *http.Requ
 func (a *authenticator) login(prefix string, w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
-		if a.uiCookieOK(r) {
+		if a.uiCookie(r) != nil {
 			http.Redirect(w, r, prefix+"/", http.StatusSeeOther)
 			return
 		}
@@ -100,14 +129,16 @@ func (a *authenticator) login(prefix string, w http.ResponseWriter, r *http.Requ
 			writeLoginPage(w, http.StatusBadRequest, "Invalid form.")
 			return
 		}
-		if !a.match(r.PostForm.Get("token")) {
+		p := a.match(r.PostForm.Get("token"))
+		c, ok := a.credentialFor(p)
+		if p == nil || !ok {
 			time.Sleep(uiLoginDelay)
 			writeLoginPage(w, http.StatusUnauthorized, "That token is not right.")
 			return
 		}
 		http.SetCookie(w, &http.Cookie{
 			Name:     UICookieName,
-			Value:    a.uiCookieValue(),
+			Value:    uiCookieValue(c),
 			Path:     prefix,
 			MaxAge:   int((30 * 24 * time.Hour).Seconds()),
 			HttpOnly: true,
@@ -169,7 +200,7 @@ button{margin-top:16px;width:100%;padding:10px;border:0;border-radius:8px;backgr
 </style></head><body>
 <form method="post" autocomplete="on">
 <h1>Tether</h1>
-<p>Enter the token this server was started with to open the remote browser.</p>
+<p>Enter your Tether token to open the remote browser.</p>
 <input type="text" name="username" value="tether" autocomplete="username" hidden>
 <label for="token">Token</label>
 <input id="token" name="token" type="password" autocomplete="current-password" required autofocus>

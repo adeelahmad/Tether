@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/adeelahmad/tether/internal/policy"
 )
 
 // DefaultAddr is loopback-only by design.
@@ -32,16 +34,27 @@ type Config struct {
 	ProfileDir  string
 	IdleTimeout time.Duration
 	Timeout     time.Duration
+	// ConsoleBuffer is how many console/log entries each tab keeps; 0
+	// turns capture off.
+	ConsoleBuffer int
 
 	AllowDomains []string
+	DenyDomains  []string
+	PolicyFile   string
 	DataDir      string
 	NoMITM       bool
+	MCP          bool
 
 	NoRemote      bool
 	RemoteQuality int
 
 	LogLevel  string
 	LogFormat string
+
+	// Derived by Parse: the merged global rules and every accepted token
+	// (--token as the admin "default" principal, plus the policy file's).
+	Rules       policy.Rules
+	Credentials []policy.Credential
 }
 
 // Env looks up an environment variable.
@@ -70,6 +83,14 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 		}
 		fs.BoolVar(p, name, def, usage+" [$"+envName+"]")
 	}
+	integer := func(p *int, name, envName string, def int, usage string) {
+		if v, ok := env(envName); ok {
+			if n, err := strconv.Atoi(v); err == nil {
+				def = n
+			}
+		}
+		fs.IntVar(p, name, def, usage+" [$"+envName+"]")
+	}
 	dur := func(p *time.Duration, name, envName string, def time.Duration, usage string) {
 		if v, ok := env(envName); ok {
 			if d, err := time.ParseDuration(v); err == nil {
@@ -79,16 +100,7 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 		fs.DurationVar(p, name, def, usage+" [$"+envName+"]")
 	}
 
-	integer := func(p *int, name, envName string, def int, usage string) {
-		if v, ok := env(envName); ok {
-			if n, err := strconv.Atoi(v); err == nil {
-				def = n
-			}
-		}
-		fs.IntVar(p, name, def, usage+" [$"+envName+"]")
-	}
-
-	var allow, tokenFile, chromeArgs string
+	var allow, deny, tokenFile, chromeArgs string
 	str(&c.Addr, "addr", "TETHER_ADDR", DefaultAddr, "listen address (loopback by default)")
 	str(&c.Token, "token", "TETHER_TOKEN", "", "bearer token required on every request (required for non-loopback --addr)")
 	str(&tokenFile, "token-file", "TETHER_TOKEN_FILE", "", "read the bearer token from this file")
@@ -101,11 +113,15 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 	str(&c.ProfileDir, "profile-dir", "TETHER_PROFILE_DIR", "", "with --launch: Chrome profile directory (default: <data-dir>/chrome-profile)")
 	dur(&c.IdleTimeout, "idle-timeout", "TETHER_IDLE_TIMEOUT", 15*time.Minute, "close tabs Tether opened after this much inactivity (0 disables)")
 	dur(&c.Timeout, "timeout", "TETHER_TIMEOUT", 60*time.Second, "default per-request timeout")
+	integer(&c.ConsoleBuffer, "console-buffer", "TETHER_CONSOLE_BUFFER", 1000, "console and browser log entries kept per tab (0 disables capture and leaves the Runtime/Log domains off)")
 	str(&allow, "allow-domains", "TETHER_ALLOW_DOMAINS", "", "comma-separated domain allowlist (default: all)")
+	str(&deny, "deny-domains", "TETHER_DENY_DOMAINS", "", "comma-separated domain denylist; deny beats allow")
+	str(&c.PolicyFile, "policy-file", "TETHER_POLICY_FILE", "", "JSON policy file: global rules plus per-token rules (see SECURITY.md)")
 	str(&c.DataDir, "data-dir", "TETHER_DATA_DIR", DefaultDataDir(), "where the local CA and launched profile live")
 	boolean(&c.NoMITM, "no-mitm", "TETHER_NO_MITM", false, "refuse HTTPS CONNECT instead of intercepting it with the local CA")
 	boolean(&c.NoRemote, "no-remote", "TETHER_NO_REMOTE", false, "disable the remote-browser web UI at /remote/")
 	integer(&c.RemoteQuality, "remote-quality", "TETHER_REMOTE_QUALITY", 70, "JPEG quality of the remote UI video, 1-100")
+	boolean(&c.MCP, "mcp", "TETHER_MCP", true, "serve the MCP face for AI agents at /mcp")
 	str(&c.LogLevel, "log-level", "TETHER_LOG_LEVEL", "info", "debug, info, warn or error")
 	str(&c.LogFormat, "log-format", "TETHER_LOG_FORMAT", "text", "text or json")
 
@@ -123,16 +139,56 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 		c.Token = strings.TrimSpace(string(b))
 	}
 	c.ChromeArgs = strings.Fields(chromeArgs)
-	for _, d := range strings.Split(allow, ",") {
-		if d = strings.TrimSpace(d); d != "" {
-			c.AllowDomains = append(c.AllowDomains, d)
-		}
-	}
+	c.AllowDomains = splitList(allow)
+	c.DenyDomains = splitList(deny)
 	if c.ProfileDir == "" {
 		c.ProfileDir = filepath.Join(c.DataDir, "chrome-profile")
 	}
-	return c, c.Validate()
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	return c, c.resolvePolicy(env)
 }
+
+func splitList(s string) []string {
+	var out []string
+	for _, d := range strings.Split(s, ",") {
+		if d = strings.TrimSpace(d); d != "" {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// resolvePolicy merges the global rules and collects every token.
+func (c *Config) resolvePolicy(env Env) error {
+	rules := policy.Rules{Allow: c.AllowDomains, Deny: c.DenyDomains}
+	c.Credentials = nil
+	if c.Token != "" {
+		c.Credentials = append(c.Credentials, policy.Credential{
+			Token:     c.Token,
+			Principal: &policy.Principal{Name: policy.DefaultTokenName, Admin: true, Scripts: true},
+		})
+	}
+	if c.PolicyFile != "" {
+		l, err := policy.LoadFile(c.PolicyFile, env)
+		if err != nil {
+			return err
+		}
+		rules.Allow = append(rules.Allow, l.Global.Allow...)
+		rules.Deny = append(rules.Deny, l.Global.Deny...)
+		c.Credentials = append(c.Credentials, l.Credentials...)
+	}
+	if err := policy.CheckCredentials(c.Credentials); err != nil {
+		return err
+	}
+	var err error
+	c.Rules, err = rules.Normalize()
+	return err
+}
+
+// HasAuth reports whether any token is configured.
+func (c *Config) HasAuth() bool { return len(c.Credentials) > 0 || c.Token != "" }
 
 // Validate checks values that flags alone cannot.
 func (c *Config) Validate() error {
@@ -147,6 +203,9 @@ func (c *Config) Validate() error {
 	}
 	if c.RemoteQuality < 1 || c.RemoteQuality > 100 {
 		return errors.New("--remote-quality must be between 1 and 100")
+	}
+	if c.ConsoleBuffer < 0 {
+		return errors.New("--console-buffer must not be negative")
 	}
 	if c.Token != "" && len(c.Token) < 16 {
 		return errors.New("--token must be at least 16 characters")

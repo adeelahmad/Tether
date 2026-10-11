@@ -19,6 +19,7 @@ import (
 	"github.com/adeelahmad/tether/internal/cdp"
 	"github.com/adeelahmad/tether/internal/cdp/cdptest"
 	"github.com/adeelahmad/tether/internal/core"
+	"github.com/adeelahmad/tether/internal/policy"
 	"github.com/adeelahmad/tether/internal/session"
 )
 
@@ -29,12 +30,12 @@ type fixture struct {
 	srv  *httptest.Server
 }
 
-func newFixture(t *testing.T, policy core.Policy) *fixture {
+func newFixture(t *testing.T, pol core.Policy) *fixture {
 	t.Helper()
 	b := cdptest.NewBrowser()
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := session.NewManager(b, session.Options{Logger: quiet})
-	c := core.New(b, m, core.Options{Policy: policy, Timeout: 5 * time.Second, Logger: quiet})
+	c := core.New(b, m, core.Options{Policy: pol, Timeout: 5 * time.Second, Logger: quiet})
 	ui := New(c, Options{})
 	srv := httptest.NewServer(ui)
 	t.Cleanup(func() {
@@ -309,10 +310,10 @@ func TestViewerStreamsAndDrives(t *testing.T) {
 	v.send(map[string]any{"t": "front"})
 
 	waitFor(t, "input", func() bool {
-		keys, mice, texts := tab.Input()
+		keys, mice, texts := tab.Recorded()
 		return len(keys) == 3 && len(mice) == 2 && len(texts) == 1
 	})
-	keys, mice, texts := tab.Input()
+	keys, mice, texts := tab.Recorded()
 	if mice[0].Type != "mousePressed" || mice[0].X != 10.5 || mice[0].Button != "left" || mice[0].ClickCount != 1 {
 		t.Errorf("mouse = %+v", mice[0])
 	}
@@ -528,7 +529,7 @@ func TestDialogsAreRelayed(t *testing.T) {
 	if m := v.next("dialog"); m.Dialog == nil || !m.Dialog.Closed {
 		t.Fatalf("close = %+v", m.Dialog)
 	}
-	if a := tab.Answers(); len(a) != 1 || !a[0].Accept || a[0].Text != "Ada" {
+	if a := tab.Answered(); len(a) != 1 || !a[0].Accept || a[0].Text == nil || *a[0].Text != "Ada" {
 		t.Fatalf("answers = %+v", a)
 	}
 	// Answering when nothing is open is reported, not fatal.
@@ -552,5 +553,41 @@ func TestQuickReconnectWaitsForOldScreencast(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if n := tab.Casting(); n != 1 {
 		t.Fatalf("overlapping screencasts: %d", n)
+	}
+}
+
+// A non-admin token sees and opens only its own tabs, as in the control
+// API; tabs of other tokens and the user's own tabs stay hidden.
+func TestTokensSeeOnlyTheirTabs(t *testing.T) {
+	f := newFixture(t, nil)
+	agent := &policy.Principal{Name: "agent"}
+	other := &policy.Principal{Name: "other"}
+	f.b.AddTab("USER1", "https://mail.example.com/")
+	mine, err := f.core.Sessions.Create(policy.WithPrincipal(context.Background(), agent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs, err := f.core.Sessions.Create(policy.WithPrincipal(context.Background(), other))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.ui.ServeHTTP(w, r.WithContext(policy.WithPrincipal(r.Context(), agent)))
+	})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/remote/api/tabs", nil))
+	var out struct{ Tabs []tabView }
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Tabs) != 1 || out.Tabs[0].ID != mine.ID {
+		t.Fatalf("agent sees %+v, want only %s", out.Tabs, mine.ID)
+	}
+	for _, id := range []string{"USER1", theirs.ID} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("DELETE", "/remote/api/tabs/"+id+"?force=true", nil))
+		if w.Code == http.StatusNoContent {
+			t.Errorf("agent closed %s", id)
+		}
 	}
 }

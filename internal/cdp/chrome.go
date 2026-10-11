@@ -3,8 +3,10 @@ package cdp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 )
 
@@ -13,9 +15,16 @@ type Chrome struct {
 	c   *conn
 	log *slog.Logger
 
-	mu     sync.Mutex
-	hooks  []func(id string)
-	closed bool
+	mu        sync.Mutex
+	hooks     []func(id string)
+	closed    bool
+	logSize   int
+	logUnsubs map[string]logSub // by CDP session ID
+}
+
+type logSub struct {
+	target string
+	cancel func()
 }
 
 var _ Browser = (*Chrome)(nil)
@@ -29,7 +38,7 @@ func Connect(ctx context.Context, wsURL string, log *slog.Logger) (*Chrome, erro
 	if err != nil {
 		return nil, err
 	}
-	b := &Chrome{c: c, log: log}
+	b := &Chrome{c: c, log: log, logSize: DefaultLogBuffer, logUnsubs: map[string]logSub{}}
 	c.subscribe("", b.onEvent)
 	if err := c.call(ctx, "", "Target.setDiscoverTargets", map[string]any{"discover": true}, nil); err != nil {
 		_ = c.close()
@@ -38,17 +47,42 @@ func Connect(ctx context.Context, wsURL string, log *slog.Logger) (*Chrome, erro
 	return b, nil
 }
 
+// SetLogBuffer sets how many console/log entries each tab attached from now
+// on keeps. Zero or less turns capture off, which also leaves the Runtime
+// and Log domains disabled.
+func (b *Chrome) SetLogBuffer(n int) {
+	b.mu.Lock()
+	b.logSize = n
+	b.mu.Unlock()
+}
+
 func (b *Chrome) onEvent(e Event) {
-	if e.Method != "Target.targetDestroyed" {
+	if e.SessionID != "" {
+		return
+	}
+	switch e.Method {
+	case "Target.targetDestroyed", "Target.detachedFromTarget":
+	default:
 		return
 	}
 	var p struct {
-		TargetID string `json:"targetId"`
+		TargetID  string `json:"targetId"`
+		SessionID string `json:"sessionId"`
 	}
 	if json.Unmarshal(e.Params, &p) != nil {
 		return
 	}
 	b.mu.Lock()
+	for sid, s := range b.logUnsubs {
+		if sid == p.SessionID || (p.SessionID == "" && s.target == p.TargetID) {
+			s.cancel()
+			delete(b.logUnsubs, sid)
+		}
+	}
+	if e.Method != "Target.targetDestroyed" {
+		b.mu.Unlock()
+		return
+	}
 	hooks := append([]func(string){}, b.hooks...)
 	b.mu.Unlock()
 	for _, h := range hooks {
@@ -76,14 +110,20 @@ func (b *Chrome) Version(ctx context.Context) (string, error) {
 
 // NewTab implements Browser. Tabs open in the background so Tether never
 // steals focus from the person using the browser.
-func (b *Chrome) NewTab(ctx context.Context) (Tab, error) {
+func (b *Chrome) NewTab(ctx context.Context) (Tab, error) { return b.newTarget(ctx, false) }
+
+// NewWindow implements Browser.
+func (b *Chrome) NewWindow(ctx context.Context) (Tab, error) { return b.newTarget(ctx, true) }
+
+func (b *Chrome) newTarget(ctx context.Context, newWindow bool) (Tab, error) {
 	var res struct {
 		TargetID string `json:"targetId"`
 	}
-	err := b.c.call(ctx, "", "Target.createTarget", map[string]any{
-		"url":        "about:blank",
-		"background": true,
-	}, &res)
+	params := map[string]any{"url": "about:blank", "background": true}
+	if newWindow {
+		params["newWindow"] = true
+	}
+	err := b.c.call(ctx, "", "Target.createTarget", params, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +148,23 @@ func (b *Chrome) AttachTab(ctx context.Context, id string) (Tab, error) {
 	if info.TargetInfo.Type != "page" {
 		return nil, fmt.Errorf("%w: %s is a %s", ErrNoSuchTab, id, info.TargetInfo.Type)
 	}
-	return b.attach(ctx, id)
+	t, err := b.attach(ctx, id)
+	if err != nil && closing(err) {
+		// The tab was closing as we attached.
+		return nil, fmt.Errorf("%w: %s: %w", ErrNoSuchTab, id, err)
+	}
+	return t, err
+}
+
+// closing reports whether err means the target or its session went away
+// mid-call.
+func closing(err error) bool {
+	var pe *ProtocolError
+	if !errors.As(err, &pe) {
+		return false
+	}
+	m := strings.ToLower(pe.Message)
+	return strings.Contains(m, "session with given id not found") || strings.Contains(m, "no target with given id")
 }
 
 func (b *Chrome) attach(ctx context.Context, id string) (*chromeTab, error) {
@@ -122,12 +178,44 @@ func (b *Chrome) attach(ctx context.Context, id string) (*chromeTab, error) {
 		return nil, err
 	}
 	t := newTab(b, id, res.SessionID)
-	for _, m := range []string{"Page.enable", "Network.enable"} {
+	domains := []string{"Page.enable", "Network.enable"}
+	b.mu.Lock()
+	if b.logSize > 0 {
+		// Subscribe before enabling so entries Log.enable replays are kept.
+		t.logs = newLogBuffer(b.logSize)
+		b.logUnsubs[res.SessionID] = logSub{target: id, cancel: b.c.subscribe(res.SessionID, t.logs.handle)}
+		domains = append(domains, "Runtime.enable", "Log.enable")
+	}
+	b.mu.Unlock()
+	for _, m := range domains {
 		if err := t.call(ctx, m, nil, nil); err != nil {
+			b.dropLogs(res.SessionID)
+			t.stop()
 			return nil, err
 		}
 	}
+	// Tether's tabs live in the background. Emulating focus makes Chrome
+	// route input to them (and into their cross-site iframes) promptly,
+	// as it does for the active tab, without stealing the person's focus.
+	if err := t.call(ctx, "Emulation.setFocusEmulationEnabled", map[string]any{"enabled": true}, nil); err != nil {
+		b.log.Debug("focus emulation unavailable", "err", err)
+	}
+	// Out-of-process (cross-site) iframes are separate targets; attach to
+	// them so frames work regardless of process. Best effort: without it
+	// only same-process frames can be entered.
+	if err := t.call(ctx, "Target.setAutoAttach", autoAttachParams, nil); err != nil {
+		b.log.Debug("auto-attach to iframes unavailable", "err", err)
+	}
 	return t, nil
+}
+
+func (b *Chrome) dropLogs(sessionID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if s, ok := b.logUnsubs[sessionID]; ok {
+		s.cancel()
+		delete(b.logUnsubs, sessionID)
+	}
 }
 
 // CloseTab implements Browser.
@@ -147,6 +235,7 @@ func (b *Chrome) Tabs(ctx context.Context) ([]TabInfo, error) {
 			Type     string `json:"type"`
 			Title    string `json:"title"`
 			URL      string `json:"url"`
+			OpenerID string `json:"openerId"`
 		} `json:"targetInfos"`
 	}
 	if err := b.c.call(ctx, "", "Target.getTargets", nil, &res); err != nil {
@@ -155,10 +244,67 @@ func (b *Chrome) Tabs(ctx context.Context) ([]TabInfo, error) {
 	var out []TabInfo
 	for _, t := range res.TargetInfos {
 		if t.Type == "page" {
-			out = append(out, TabInfo{ID: t.TargetID, URL: t.URL, Title: t.Title})
+			out = append(out, TabInfo{ID: t.TargetID, URL: t.URL, Title: t.Title, OpenerID: t.OpenerID})
 		}
 	}
 	return out, nil
+}
+
+// Window implements Browser.
+func (b *Chrome) Window(ctx context.Context, tabID string) (Window, error) {
+	var res struct {
+		WindowID int    `json:"windowId"`
+		Bounds   Window `json:"bounds"`
+	}
+	if err := b.c.call(ctx, "", "Browser.getWindowForTarget", map[string]any{"targetId": tabID}, &res); err != nil {
+		return Window{}, err
+	}
+	w := res.Bounds
+	w.ID = res.WindowID
+	return w, nil
+}
+
+// SetWindow implements Browser. Chrome only resizes a window in the
+// normal state, so a maximised, minimised or fullscreen window is
+// restored first.
+func (b *Chrome) SetWindow(ctx context.Context, tabID string, wb WindowBounds) (Window, error) {
+	w, err := b.Window(ctx, tabID)
+	if err != nil {
+		return Window{}, err
+	}
+	set := func(bounds map[string]any) error {
+		return b.c.call(ctx, "", "Browser.setWindowBounds", map[string]any{"windowId": w.ID, "bounds": bounds}, nil)
+	}
+	if wb.State != "" && wb.State != "normal" {
+		if w.State != wb.State {
+			if w.State != "normal" {
+				if err := set(map[string]any{"windowState": "normal"}); err != nil {
+					return Window{}, err
+				}
+			}
+			if err := set(map[string]any{"windowState": wb.State}); err != nil {
+				return Window{}, err
+			}
+		}
+		return b.Window(ctx, tabID)
+	}
+	if w.State != "normal" {
+		if err := set(map[string]any{"windowState": "normal"}); err != nil {
+			return Window{}, err
+		}
+	}
+	bounds := map[string]any{}
+	for k, v := range map[string]*int{"left": wb.Left, "top": wb.Top, "width": wb.Width, "height": wb.Height} {
+		if v != nil {
+			bounds[k] = *v
+		}
+	}
+	if len(bounds) > 0 {
+		if err := set(bounds); err != nil {
+			return Window{}, err
+		}
+	}
+	return b.Window(ctx, tabID)
 }
 
 // Quit asks Chrome itself to exit. Only for browsers Tether launched.

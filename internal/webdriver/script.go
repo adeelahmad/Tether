@@ -19,7 +19,11 @@ const wrapperHead = `function(__tArgs, ...__tEls) {
     if (v && typeof v === 'object') {
       if (Object.prototype.hasOwnProperty.call(v, '__tetherEl')) {
         const el = __tEls[v.__tetherEl];
-        if (!el || !el.isConnected) { const e = new Error('stale element reference'); e.name = 'StaleElementReference'; throw e; }
+        if (!el || !el.isConnected) {
+          const e = new Error(v.s ? 'detached shadow root' : 'stale element reference');
+          e.name = v.s ? 'DetachedShadowRoot' : 'StaleElementReference';
+          throw e;
+        }
         return el;
       }
       const o = {};
@@ -38,6 +42,7 @@ const wrapperHead = `function(__tArgs, ...__tEls) {
       if (typeof v === 'number') return isFinite(v) ? v : null;
       if (typeof v !== 'object') return v;
       if (typeof Element !== 'undefined' && v instanceof Element) { els.push(v); return {__tetherEl: els.length - 1}; }
+      if (typeof ShadowRoot !== 'undefined' && v instanceof ShadowRoot) { els.push(v); return {__tetherEl: els.length - 1, s: 1}; }
       if (typeof Node !== 'undefined' && v instanceof Node) return null;
       if (v === window) return null;
       if (seen.has(v)) throw new Error('cyclic object value');
@@ -95,6 +100,14 @@ func encodeArgs(ctx context.Context, tab cdp.Tab, args []json.RawMessage) (any, 
 				handles = append(handles, cdp.Arg{ObjectID: oid})
 				return map[string]any{"__tetherEl": len(handles) - 1}, nil
 			}
+			if ref, ok := t[ShadowKey].(string); ok {
+				oid, err := resolveShadow(ctx, tab, ref)
+				if err != nil {
+					return nil, err
+				}
+				handles = append(handles, cdp.Arg{ObjectID: oid})
+				return map[string]any{"__tetherEl": len(handles) - 1, "s": 1}, nil
+			}
 			for k := range t {
 				nv, err := walk(t[k])
 				if err != nil {
@@ -144,6 +157,13 @@ func runScript(ctx context.Context, tab cdp.Tab, script string, args []json.RawM
 		if errors.As(err, &js) && strings.Contains(js.Text, "StaleElementReference") {
 			return nil, wdErr(ErrStaleElement, "element is no longer attached to the page")
 		}
+		if errors.As(err, &js) && strings.Contains(js.Text, "DetachedShadowRoot") {
+			return nil, wdErr(ErrDetachedShadowRoot, "shadow root is no longer attached to the page")
+		}
+		var pe *cdp.ProtocolError
+		if errors.As(err, &pe) && strings.Contains(pe.Message, "same JavaScript world") {
+			return nil, wdErr(ErrNoSuchElement, "element belongs to another frame; switch to its frame first")
+		}
 		return nil, err
 	}
 	defer func() { _ = tab.Release(context.WithoutCancel(ctx), holder.ObjectID) }()
@@ -161,7 +181,7 @@ func runScript(ctx context.Context, tab cdp.Tab, script string, args []json.RawM
 			elsID = p.Value.ObjectID
 		}
 	}
-	var refs []string
+	var ids []int
 	if elsID != "" {
 		items, err := cdp.ArrayItems(ctx, tab, elsID)
 		if err != nil {
@@ -172,29 +192,37 @@ func runScript(ctx context.Context, tab cdp.Tab, script string, args []json.RawM
 			if err != nil {
 				return nil, err
 			}
-			refs = append(refs, elementRef(id))
+			ids = append(ids, id)
 		}
 	}
 	var v any
 	if err := json.Unmarshal([]byte(valueJSON), &v); err != nil {
 		return nil, wdErr(ErrJavaScript, "result is not serialisable")
 	}
-	return replacePlaceholders(v, refs), nil
+	return replacePlaceholders(v, ids), nil
 }
 
-func replacePlaceholders(v any, refs []string) any {
+// replacePlaceholders swaps the wrapper's {__tetherEl: i[, s: 1]} markers
+// for web element or shadow root references.
+func replacePlaceholders(v any, ids []int) any {
 	switch t := v.(type) {
 	case []any:
 		for i := range t {
-			t[i] = replacePlaceholders(t[i], refs)
+			t[i] = replacePlaceholders(t[i], ids)
 		}
 		return t
 	case map[string]any:
-		if idx, ok := t["__tetherEl"].(float64); ok && len(t) == 1 && int(idx) < len(refs) {
-			return map[string]any{ElementKey: refs[int(idx)]}
+		if idx, ok := t["__tetherEl"].(float64); ok && int(idx) < len(ids) {
+			_, shadow := t["s"]
+			if len(t) == 2 && shadow {
+				return map[string]any{ShadowKey: shadowRef(ids[int(idx)])}
+			}
+			if len(t) == 1 {
+				return map[string]any{ElementKey: elementRef(ids[int(idx)])}
+			}
 		}
 		for k := range t {
-			t[k] = replacePlaceholders(t[k], refs)
+			t[k] = replacePlaceholders(t[k], ids)
 		}
 		return t
 	}
@@ -206,12 +234,31 @@ func replacePlaceholders(v any, refs []string) any {
 // reference.
 func elementRef(backendNodeID int) string { return "e" + strconv.Itoa(backendNodeID) }
 
-func parseElementRef(ref string) (int, bool) {
-	if !strings.HasPrefix(ref, "e") {
+func parseElementRef(ref string) (int, bool) { return parseRef(ref, "e") }
+
+// Shadow root references work the same way, with their own prefix.
+func shadowRef(backendNodeID int) string { return "s" + strconv.Itoa(backendNodeID) }
+
+func parseShadowRef(ref string) (int, bool) { return parseRef(ref, "s") }
+
+func parseRef(ref, prefix string) (int, bool) {
+	if !strings.HasPrefix(ref, prefix) {
 		return 0, false
 	}
-	n, err := strconv.Atoi(ref[1:])
+	n, err := strconv.Atoi(ref[len(prefix):])
 	return n, err == nil && n > 0
+}
+
+func resolveShadow(ctx context.Context, tab cdp.Tab, ref string) (string, error) {
+	id, ok := parseShadowRef(ref)
+	if !ok {
+		return "", wdErr(ErrNoSuchShadowRoot, "unknown shadow root reference "+ref)
+	}
+	oid, err := tab.ResolveNode(ctx, id)
+	if err != nil {
+		return "", wdErr(ErrDetachedShadowRoot, "shadow root "+ref+" is no longer attached to the page")
+	}
+	return oid, nil
 }
 
 func resolveElement(ctx context.Context, tab cdp.Tab, ref string) (string, error) {
@@ -229,6 +276,12 @@ func resolveElement(ctx context.Context, tab cdp.Tab, ref string) (string, error
 // elementArg is a script argument referring to element ref.
 func elementArg(ref string) json.RawMessage {
 	b, _ := json.Marshal(map[string]string{ElementKey: ref})
+	return b
+}
+
+// shadowArg is a script argument referring to shadow root ref.
+func shadowArg(ref string) json.RawMessage {
+	b, _ := json.Marshal(map[string]string{ShadowKey: ref})
 	return b
 }
 

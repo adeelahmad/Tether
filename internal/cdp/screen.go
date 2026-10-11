@@ -9,16 +9,15 @@ import (
 )
 
 // Screen is implemented by tabs a person can watch and drive: a live
-// screencast plus raw mouse, keyboard and text input. It is separate from
-// Tab so faces that never need video (proxy, WebDriver) do not depend on it;
-// the remote UI type-asserts a Tab to Screen.
+// screencast, text input and dialog notifications, on top of the mouse,
+// key and dialog calls every Tab has. It is separate from Tab so faces
+// that never need video (proxy, WebDriver) do not depend on it; the remote
+// UI type-asserts a Tab to Screen.
 type Screen interface {
 	// Screencast streams frames of the tab's viewport to fn until ctx ends.
 	// fn runs on one goroutine and should not block for long: the next
 	// frame is only requested once it returns.
 	Screencast(ctx context.Context, opts ScreencastOptions, fn func(Frame)) error
-	// Mouse dispatches one Input.dispatchMouseEvent.
-	Mouse(ctx context.Context, e MouseEvent) error
 	// InsertText types text into the focused element as one input event,
 	// the way a paste or an IME commit does.
 	InsertText(ctx context.Context, text string) error
@@ -31,17 +30,6 @@ type Screen interface {
 	// closes. fn runs on the event goroutine and must not block. Dialogs
 	// are drawn by Chrome, not the page, so they never appear in frames.
 	WatchDialogs(fn func(Dialog)) (cancel func())
-	// HandleDialog accepts or dismisses the open dialog.
-	HandleDialog(ctx context.Context, accept bool, promptText string) error
-}
-
-// Dialog is a JavaScript dialog opened (or closed) by the page.
-type Dialog struct {
-	Type          string `json:"type,omitempty"` // alert, confirm, prompt, beforeunload
-	Message       string `json:"message,omitempty"`
-	DefaultPrompt string `json:"defaultPrompt,omitempty"`
-	URL           string `json:"url,omitempty"`
-	Closed        bool   `json:"closed,omitempty"`
 }
 
 // ScreencastOptions configure Screencast.
@@ -102,21 +90,8 @@ type FrameMeta struct {
 	Timestamp       float64 `json:"timestamp,omitempty"`
 }
 
-// MouseEvent is one Input.dispatchMouseEvent. X and Y are CSS pixels
-// relative to the viewport.
-type MouseEvent struct {
-	Type       string  `json:"type"` // mousePressed, mouseReleased, mouseMoved, mouseWheel
-	X          float64 `json:"x"`
-	Y          float64 `json:"y"`
-	Button     string  `json:"button,omitempty"`  // none, left, middle, right, back, forward
-	Buttons    int     `json:"buttons,omitempty"` // bitmask of pressed buttons
-	ClickCount int     `json:"clickCount,omitempty"`
-	DeltaX     float64 `json:"deltaX,omitempty"`
-	DeltaY     float64 `json:"deltaY,omitempty"`
-	Modifiers  int     `json:"modifiers,omitempty"`
-}
-
-// Validate rejects events Chrome would refuse or that make no sense.
+// Validate rejects mouse events Chrome would refuse or that make no
+// sense; faces that take raw events from clients call it.
 func (e MouseEvent) Validate() error {
 	switch e.Type {
 	case "mousePressed", "mouseReleased", "mouseMoved", "mouseWheel":
@@ -321,17 +296,6 @@ func (t *chromeTab) captureFrame(ctx context.Context, opts ScreencastOptions) (F
 	}}, nil
 }
 
-// Mouse implements Screen.
-func (t *chromeTab) Mouse(ctx context.Context, e MouseEvent) error {
-	if err := e.Validate(); err != nil {
-		return err
-	}
-	if e.Type == "mouseWheel" && e.Button == "" {
-		e.Button = "none"
-	}
-	return t.call(ctx, "Input.dispatchMouseEvent", e, nil)
-}
-
 // InsertText implements Screen.
 func (t *chromeTab) InsertText(ctx context.Context, text string) error {
 	return t.call(ctx, "Input.insertText", map[string]any{"text": text}, nil)
@@ -355,13 +319,4 @@ func (t *chromeTab) WatchDialogs(fn func(Dialog)) (cancel func()) {
 			fn(Dialog{Closed: true})
 		}
 	})
-}
-
-// HandleDialog implements Screen.
-func (t *chromeTab) HandleDialog(ctx context.Context, accept bool, promptText string) error {
-	p := map[string]any{"accept": accept}
-	if promptText != "" {
-		p["promptText"] = promptText
-	}
-	return t.call(ctx, "Page.handleJavaScriptDialog", p, nil)
 }

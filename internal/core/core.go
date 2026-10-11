@@ -1,8 +1,8 @@
 // Package core is the engine every Tether face is built on: it turns
 // "this request, in this tab" into real browser work and back.
 //
-// Four faces share it — the HTTP proxy, the WebDriver endpoints and the
-// remote-browser UI (shipping), and an MCP server (stub). Faces stay thin:
+// Four faces share it — the HTTP proxy, the WebDriver endpoints, the MCP
+// server and the remote-browser UI, all shipping. Faces stay thin:
 // they translate their protocol into core calls and core results back into
 // their protocol. Sessions, policy and browser access live here.
 package core
@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/adeelahmad/tether/internal/cdp"
+	"github.com/adeelahmad/tether/internal/policy"
 	"github.com/adeelahmad/tether/internal/session"
 )
 
@@ -38,6 +39,8 @@ type Core struct {
 	Log      *slog.Logger
 	// Timeout bounds a single request when the caller sets none.
 	Timeout time.Duration
+
+	guards guards
 }
 
 // Options configure New.
@@ -51,7 +54,8 @@ type Options struct {
 func New(b cdp.Browser, m *session.Manager, opts Options) *Core {
 	c := &Core{Sessions: m, Browser: b, Policy: opts.Policy, Log: opts.Logger, Timeout: opts.Timeout}
 	if c.Policy == nil {
-		c.Policy = AllowAll
+		// No global rules, but token and session rules still apply.
+		c.Policy = NewRulesPolicy(policy.Rules{})
 	}
 	if c.Log == nil {
 		c.Log = slog.Default()
@@ -59,6 +63,7 @@ func New(b cdp.Browser, m *session.Manager, opts Options) *Core {
 	if c.Timeout <= 0 {
 		c.Timeout = 60 * time.Second
 	}
+	m.OnClose(c.dropGuard)
 	return c
 }
 
@@ -116,6 +121,9 @@ func (c *Core) Do(ctx context.Context, s *session.Session, req *Request) (*Respo
 		return nil, err
 	}
 	defer unlock()
+	if err := c.Prepare(ctx, s); err != nil {
+		return nil, err
+	}
 
 	mode := req.Mode
 	if mode == ModeAuto {
@@ -136,12 +144,45 @@ func (c *Core) Do(ctx context.Context, s *session.Session, req *Request) (*Respo
 		resp, err = c.navigate(ctx, s.Tab, req, mode)
 	}
 	if err != nil {
+		return nil, blockedErr(err)
+	}
+	if err := c.checkFinal(ctx, s, resp.FinalURL, mode != ModeFetch); err != nil {
 		return nil, err
 	}
 	if req.Method == http.MethodHead {
 		resp.Body = nil
 	}
 	return resp, nil
+}
+
+// checkFinal holds the URL a request ended up on (after redirects) to the
+// same policy as the one it asked for. A navigation that landed somewhere
+// forbidden leaves the tab on about:blank rather than on that page.
+func (c *Core) checkFinal(ctx context.Context, s *session.Session, final string, navigated bool) error {
+	if final == "" {
+		return nil
+	}
+	u, err := url.Parse(final)
+	if err != nil {
+		return fmt.Errorf("%w: unparseable final URL", ErrForbidden)
+	}
+	if err := c.Policy.Allow(ctx, s, u); err != nil {
+		if navigated {
+			_, _ = s.Tab.Navigate(context.WithoutCancel(ctx), "about:blank", cdp.WaitNone)
+		}
+		return fmt.Errorf("redirected: %w", err)
+	}
+	return nil
+}
+
+// blockedErr turns a navigation the browser-side guard stopped into a
+// policy error.
+func blockedErr(err error) error {
+	var nav *cdp.NavigationError
+	if errors.As(err, &nav) && strings.Contains(nav.Text, "ERR_BLOCKED_BY_CLIENT") {
+		return fmt.Errorf("%w: navigation to %s was stopped in the browser because it led outside this tab's policy", ErrForbidden, nav.URL)
+	}
+	return err
 }
 
 // ErrBadRequest marks a request the core cannot execute as given.
@@ -281,13 +322,55 @@ func ensureOrigin(ctx context.Context, tab cdp.Tab, u *url.URL) error {
 }
 
 // Eval evaluates JavaScript in the session's tab via Runtime.evaluate.
+// The principal in ctx must be allowed to run scripts. A restricted tab is
+// guarded first, so script cannot navigate it past its policy.
 func (c *Core) Eval(ctx context.Context, s *session.Session, expr string, awaitPromise bool) (json.RawMessage, error) {
+	if err := AllowScripts(ctx); err != nil {
+		return nil, err
+	}
 	unlock, err := s.Lock(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
+	if err := c.Prepare(ctx, s); err != nil {
+		return nil, err
+	}
 	return s.Tab.Evaluate(ctx, expr, awaitPromise)
+}
+
+// Logs returns the console messages, uncaught exceptions and browser log
+// entries the session's tab has produced since the entry with sequence
+// number after (0 = everything still buffered), keeping only those at or
+// above minLevel ("" = all). next is the cursor to pass as after on the
+// following call; it moves past filtered-out entries too, so a poller never
+// re-reads them. Logs does not take the session lock, so it can be read
+// while a request runs in the tab, and it does not reset the idle timeout.
+func (c *Core) Logs(s *session.Session, after uint64, minLevel string) (entries []cdp.LogEntry, next uint64) {
+	all := s.Tab.Logs(after)
+	next = after
+	if len(all) > 0 {
+		next = all[len(all)-1].Seq
+	}
+	min := cdp.LevelRank(minLevel)
+	entries = make([]cdp.LogEntry, 0, len(all))
+	for _, e := range all {
+		if minLevel == "" || cdp.LevelRank(e.Level) >= min {
+			entries = append(entries, e)
+		}
+	}
+	return entries, next
+}
+
+// ParseLevel validates a minimum log level; "" means all levels.
+func ParseLevel(s string) (string, error) {
+	switch l := strings.ToLower(s); l {
+	case "", cdp.LevelDebug, cdp.LevelInfo, cdp.LevelWarning, cdp.LevelError:
+		return l, nil
+	case "warn":
+		return cdp.LevelWarning, nil
+	}
+	return "", fmt.Errorf("%w: level must be one of debug, info, warning, error", ErrBadRequest)
 }
 
 // Navigate loads rawURL in the session's tab, subject to policy. The
@@ -300,7 +383,17 @@ func (c *Core) Navigate(ctx context.Context, s *session.Session, rawURL string, 
 	if err := c.Policy.Allow(ctx, s, u); err != nil {
 		return nil, err
 	}
-	return s.Tab.Navigate(ctx, u.String(), wait)
+	if err := c.Prepare(ctx, s); err != nil {
+		return nil, err
+	}
+	doc, err := s.Tab.Navigate(ctx, u.String(), wait)
+	if err != nil {
+		return nil, blockedErr(err)
+	}
+	if err := c.checkFinal(ctx, s, doc.URL, true); err != nil {
+		return nil, err
+	}
+	return doc, nil
 }
 
 var hopByHop = []string{

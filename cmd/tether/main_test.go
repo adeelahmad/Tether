@@ -22,7 +22,7 @@ func TestRun(t *testing.T) {
 		{[]string{"serve", "-h"}, 0, "", "-insecure-allow-public"},
 		{[]string{"serve", "-h"}, 0, "", "-mcp"},
 		{[]string{"mcp", "-h"}, 0, "", "TETHER_MCP_URL"},
-		{[]string{"mcp", "--token-file", "/nonexistent/token"}, 2, "", "no such file"},
+		{[]string{"mcp", "--token-file", "/nonexistent/token"}, 2, "", "tether: open"},
 		{[]string{"serve", "--addr", "0.0.0.0:0", "--chrome", "127.0.0.1:1"}, 1, "", "refusing to listen"},
 	}
 	for _, tt := range tests {

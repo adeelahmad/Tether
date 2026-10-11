@@ -1,0 +1,30 @@
+{% extends "main.html" %}
+
+{% block tabs %}
+  {{ super() }}
+  <section class="tx-hero">
+    <div class="md-grid md-typeset tx-hero__inner">
+      <div class="tx-hero__copy">
+        <p class="tx-hero__eyebrow">Open source · GPL-3.0 · No extension</p>
+        <h1>Your logged-in Chrome, as a proxy, from anywhere.</h1>
+        <p class="tx-hero__lead">
+          Give your AI agent, your script or your other laptop your real,
+          signed-in browser. One binary that speaks HTTP proxy, WebDriver and
+          MCP, and drives Chrome over the DevTools Protocol.
+        </p>
+        <div class="tx-hero__actions">
+          <a href="{{ 'getting-started/' | url }}" class="md-button md-button--primary">Get started</a>
+          <a href="{{ config.repo_url }}" class="md-button">Star on GitHub</a>
+        </div>
+        <pre class="tx-hero__install"><code>go install github.com/adeelahmad/tether/cmd/tether@latest</code></pre>
+      </div>
+      <div class="tx-hero__demo">
+        <img src="{{ 'demo.gif' | url }}" alt="Tether driving a real Chrome tab: curl through the proxy returns a logged-in page" loading="lazy">
+      </div>
+    </div>
+  </section>
+{% endblock %}
+
+{% block content %}
+  {{ page.content }}
+{% endblock %}

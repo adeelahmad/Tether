@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Docs site and landing page at <https://adeelahmad.github.io/Tether/>, built
+  from `docs/` with MkDocs Material and deployed to GitHub Pages on every push
+  to `main` (`make docs`, `make docs-serve`).
 - Per-token and per-session domain policies (`docs/POLICIES.md`): a
   `--policy-file` defines named tokens, each with allow/deny rules, an
   `admin` flag and a `scripts` permission; `--deny-domains` adds a global

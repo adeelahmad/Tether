@@ -1,0 +1,95 @@
+site_name: Tether
+site_description: Your logged-in Chrome, as a proxy, WebDriver and MCP server, from anywhere. No extension.
+site_url: https://adeelahmad.github.io/Tether/
+repo_url: https://github.com/adeelahmad/Tether
+repo_name: adeelahmad/Tether
+edit_uri: edit/main/docs/
+copyright: GPL-3.0-or-later &copy; Adeel Ahmad
+
+docs_dir: docs
+site_dir: site
+strict: true
+
+theme:
+  name: material
+  custom_dir: website/overrides
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+
+extra_css:
+  - assets/extra.css
+
+hooks:
+  - website/hooks.py
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Guides:
+      - HTTP proxy & control API: proxy.md
+      - MCP for AI agents: MCP.md
+      - WebDriver / Selenium: WEBDRIVER.md
+      - Remote browser UI: REMOTE.md
+      - Policies: POLICIES.md
+  - Reference:
+      - Configuration: configuration.md
+      - Architecture: ARCHITECTURE.md
+      - Security: security.md
+  - Project:
+      - Contributing: contributing.md
+      - Changelog: changelog.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/adeelahmad/Tether

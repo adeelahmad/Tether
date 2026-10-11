@@ -1,0 +1,86 @@
+/* Landing page hero (website/overrides/home.html). */
+.tx-hero {
+  background: linear-gradient(135deg, var(--md-primary-fg-color) 0%, #1a237e 60%, #00695c 100%);
+  color: var(--md-primary-bg-color);
+}
+
+.tx-hero__inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2.4rem;
+  padding: 3.2rem 0.8rem 3.6rem;
+}
+
+.tx-hero__copy {
+  flex: 1 1 22rem;
+  min-width: 0;
+}
+
+.tx-hero__demo {
+  flex: 1 1 22rem;
+  min-width: 0;
+}
+
+.tx-hero__demo img {
+  display: block;
+  width: 100%;
+  border-radius: 0.4rem;
+  box-shadow: 0 1rem 2.5rem rgba(0, 0, 0, 0.35);
+}
+
+.tx-hero .md-typeset h1 {
+  color: inherit;
+  font-weight: 700;
+  font-size: 2.2rem;
+  line-height: 1.2;
+  margin: 0 0 1rem;
+}
+
+.tx-hero__eyebrow {
+  margin: 0 0 0.6rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.8;
+}
+
+.tx-hero__lead {
+  font-size: 0.95rem;
+  opacity: 0.92;
+}
+
+.md-typeset .tx-hero__actions .md-button {
+  margin: 0.4rem 0.6rem 0.4rem 0;
+  color: var(--md-primary-bg-color);
+  border-color: var(--md-primary-bg-color);
+}
+
+.md-typeset .tx-hero__actions .md-button--primary {
+  background-color: var(--md-accent-fg-color);
+  border-color: var(--md-accent-fg-color);
+  color: #fff;
+}
+
+.md-typeset .tx-hero__install {
+  margin-top: 1.2rem;
+}
+
+.md-typeset .tx-hero__install code {
+  background: rgba(0, 0, 0, 0.3);
+  color: #e0f2f1;
+  font-size: 0.7rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+@media screen and (max-width: 44.9375em) {
+  .tx-hero .md-typeset h1 {
+    font-size: 1.6rem;
+  }
+
+  .tx-hero__inner {
+    padding: 2rem 0.8rem 2.4rem;
+  }
+}

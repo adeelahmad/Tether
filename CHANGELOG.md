@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Per-token and per-session domain policies (`docs/POLICIES.md`): a
+  `--policy-file` defines named tokens, each with allow/deny rules, an
+  `admin` flag and a `scripts` permission; `--deny-domains` adds a global
+  denylist; tabs carry their own session rules
+  (`POST /tether/v1/tabs {"policy": …}`, `GET`/`PUT /tether/v1/tabs/{id}/policy`,
+  WebDriver `tether:options.policy`). Rules are layered (global ∩ token ∩
+  owning token ∩ session) and restricted tabs are guarded in the browser via
+  the DevTools `Fetch` domain, so redirects, link clicks and page script
+  cannot leave the allowlist.
+- Tab ownership: non-admin tokens only see and drive the tabs they opened,
+  get their own per-site default tabs, and cannot adopt existing tabs.
+- `GET /tether/v1/whoami` reports the calling token and its permissions.
+
 - Tab-session core: one session per real Chrome tab, resolved by
   `X-Tether-Tab-ID` header → `tether_tab` cookie → one default tab per
   registrable domain (Public Suffix List). Idle timeout, explicit close, and

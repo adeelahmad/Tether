@@ -77,6 +77,14 @@ type Tab interface {
 
 	Click(ctx context.Context, x, y float64) error
 	Key(ctx context.Context, k KeyEvent) error
+
+	// Guard enforces check on every top-level document request the tab
+	// makes — navigations, redirects, link clicks, script-driven location
+	// changes — by pausing it in the browser (Fetch domain) and failing it
+	// with net::ERR_BLOCKED_BY_CLIENT when check returns an error. Calling
+	// Guard again replaces check; a nil check removes the guard. check runs
+	// on the event loop and must not block.
+	Guard(ctx context.Context, check func(url string) error) error
 }
 
 // TabInfo describes a page target.

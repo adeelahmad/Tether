@@ -73,7 +73,7 @@ func site() *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
-func startTether(t *testing.T) (base string, client *http.Client) {
+func startTether(t *testing.T, opts ...func(*config.Config)) (base string, client *http.Client) {
 	t.Helper()
 	if _, err := cdp.FindChrome(); err != nil {
 		if os.Getenv("TETHER_REQUIRE_CHROME") != "" {
@@ -86,6 +86,9 @@ func startTether(t *testing.T) (base string, client *http.Client) {
 		Addr: "127.0.0.1:0", Chrome: "auto", Launch: true, Headless: true,
 		ProfileDir: dir + "/profile", DataDir: dir, IdleTimeout: time.Minute, Timeout: 30 * time.Second,
 		LogLevel: "debug", ChromeArgs: strings.Fields(os.Getenv("TETHER_CHROME_ARGS")),
+	}
+	for _, o := range opts {
+		o(cfg)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	log := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))

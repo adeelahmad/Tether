@@ -136,6 +136,9 @@ func (h *Handler) execute(async bool) command {
 		if req.Script == nil {
 			return nil, wdErr(ErrInvalidArgument, "script is required")
 		}
+		if err := core.AllowScripts(ctx); err != nil {
+			return nil, err
+		}
 		if t := ws.getTimeouts().Script; t != nil {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, time.Duration(*t)*time.Millisecond)

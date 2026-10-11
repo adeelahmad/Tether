@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Per-token and per-session domain policies (`docs/POLICIES.md`): a
+  `--policy-file` defines named tokens, each with allow/deny rules, an
+  `admin` flag and a `scripts` permission; `--deny-domains` adds a global
+  denylist; tabs carry their own session rules
+  (`POST /tether/v1/tabs {"policy": …}`, `GET`/`PUT /tether/v1/tabs/{id}/policy`,
+  WebDriver `tether:options.policy`). Rules are layered (global ∩ token ∩
+  owning token ∩ session) and restricted tabs are guarded in the browser via
+  the DevTools `Fetch` domain, so redirects, link clicks and page script
+  cannot leave the allowlist.
+- Tab ownership: non-admin tokens only see and drive the tabs they opened,
+  get their own per-site default tabs, and cannot adopt existing tabs.
+- `GET /tether/v1/whoami` reports the calling token and its permissions.
+
 - Per-tab console capture: `console.*` calls, uncaught exceptions and
   browser log entries (`Runtime.consoleAPICalled`, `Runtime.exceptionThrown`,
   `Log.entryAdded`) are kept in a ring buffer per tab (`--console-buffer`,

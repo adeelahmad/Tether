@@ -27,6 +27,11 @@ With a token: `ClientConfig(remote_server_addr=..., auth_type=AuthType.BEARER, t
   `{"capabilities": {"alwaysMatch": {"tether:options": {"tabId": "<id>"}}}}`.
   Attached tabs are left open when the session ends (override with
   `"keepTab": false`).
+- Session rules: `{"tether:options": {"policy": {"allow": ["example.com"], "deny": ["admin.example.com"]}}}`
+  restricts where the session's tab may navigate, on top of the global and
+  token rules (see [POLICIES.md](POLICIES.md)). Navigating outside them fails
+  with `unsupported operation`; *Execute Script* needs a token with the
+  `scripts` permission.
 - One session = one tab = one window handle. Window switching, new windows and
   frames are out of scope.
 

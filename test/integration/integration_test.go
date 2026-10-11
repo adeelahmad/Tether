@@ -78,7 +78,7 @@ func site() *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
-func startTether(t *testing.T) (base string, client *http.Client) {
+func startTether(t *testing.T, opts ...func(*config.Config)) (base string, client *http.Client) {
 	t.Helper()
 	if _, err := cdp.FindChrome(); err != nil {
 		if os.Getenv("TETHER_REQUIRE_CHROME") != "" {
@@ -92,6 +92,9 @@ func startTether(t *testing.T) (base string, client *http.Client) {
 		ProfileDir: dir + "/profile", DataDir: dir, IdleTimeout: time.Minute, Timeout: 30 * time.Second,
 		ConsoleBuffer: 100,
 		LogLevel:      "debug", ChromeArgs: strings.Fields(os.Getenv("TETHER_CHROME_ARGS")),
+	}
+	for _, o := range opts {
+		o(cfg)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	log := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -459,8 +462,16 @@ func TestConsoleLogs(t *testing.T) {
 	if !levels["SEVERE"] || !levels["WARNING"] || !levels["INFO"] {
 		t.Fatalf("webdriver log levels = %v from %v", levels, got)
 	}
-	if again := w.call("POST", "/log", map[string]string{"type": "browser"}).([]any); len(again) != 0 {
-		t.Fatalf("second read repeated entries: %v", again)
+	// A second read returns only entries logged since the first (a late
+	// favicon 404 can legitimately arrive in between), never repeats.
+	seen := map[string]bool{}
+	for _, e := range got {
+		seen[fmt.Sprint(e)] = true
+	}
+	for _, e := range w.call("POST", "/log", map[string]string{"type": "browser"}).([]any) {
+		if seen[fmt.Sprint(e)] {
+			t.Fatalf("second read repeated entry: %v", e)
+		}
 	}
 }
 

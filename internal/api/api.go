@@ -15,6 +15,7 @@ import (
 	"github.com/adeelahmad/tether/internal/cdp"
 	"github.com/adeelahmad/tether/internal/core"
 	"github.com/adeelahmad/tether/internal/httpx"
+	"github.com/adeelahmad/tether/internal/policy"
 	"github.com/adeelahmad/tether/internal/session"
 	"github.com/adeelahmad/tether/internal/version"
 )
@@ -40,6 +41,9 @@ func New(c *core.Core, caPEM []byte, faces []string) *API {
 	a.mux.HandleFunc("GET /tether/v1/tabs/{id}", a.getTab)
 	a.mux.HandleFunc("DELETE /tether/v1/tabs/{id}", a.closeTab)
 	a.mux.HandleFunc("POST /tether/v1/tabs/{id}/eval", a.eval)
+	a.mux.HandleFunc("GET /tether/v1/tabs/{id}/policy", a.getPolicy)
+	a.mux.HandleFunc("PUT /tether/v1/tabs/{id}/policy", a.putPolicy)
+	a.mux.HandleFunc("GET /tether/v1/whoami", a.whoami)
 	a.mux.HandleFunc("GET /tether/v1/tabs/{id}/logs", a.logs)
 	a.mux.HandleFunc("/tether/v1/", func(w http.ResponseWriter, _ *http.Request) {
 		httpx.WriteError(w, http.StatusNotFound, "not_found", "no such endpoint")
@@ -107,8 +111,9 @@ func (a *API) listTabs(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createTab(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		URL  string `json:"url"`
-		Wait string `json:"wait"`
+		URL    string        `json:"url"`
+		Wait   string        `json:"wait"`
+		Policy *policy.Rules `json:"policy"`
 	}
 	if err := decode(r, &req); err != nil {
 		a.fail(w, err)
@@ -119,8 +124,20 @@ func (a *API) createTab(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, errors.Join(core.ErrBadRequest, err))
 		return
 	}
+	var rules policy.Rules
+	if req.Policy != nil {
+		if rules, err = req.Policy.Normalize(); err != nil {
+			a.fail(w, errors.Join(core.ErrBadRequest, err))
+			return
+		}
+	}
 	s, err := a.core.Sessions.Create(r.Context())
 	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	if err := a.core.SetSessionRules(r.Context(), s, rules); err != nil {
+		_ = a.core.Sessions.Close(context.WithoutCancel(r.Context()), s.ID, false)
 		a.fail(w, err)
 		return
 	}
@@ -187,6 +204,74 @@ func (a *API) eval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"value": v})
+}
+
+// policyView shows every layer that applies to a tab, so a client can see
+// why a URL is refused.
+type policyView struct {
+	Tab     string        `json:"tab"`
+	Owner   string        `json:"owner,omitempty"`
+	Global  *policy.Rules `json:"global,omitempty"`
+	Token   *policy.Rules `json:"token,omitempty"`
+	Session policy.Rules  `json:"session"`
+}
+
+func (a *API) policyOf(s *session.Session) policyView {
+	v := policyView{Tab: s.ID, Owner: s.Owner, Session: s.Rules()}
+	if rp, ok := a.core.Policy.(*core.RulesPolicy); ok && !rp.Global.Empty() {
+		v.Global = &rp.Global
+	}
+	if r := s.OwnerPrincipal().RulesOrEmpty(); !r.Empty() {
+		v.Token = &r
+	}
+	return v
+}
+
+func (a *API) getPolicy(w http.ResponseWriter, r *http.Request) {
+	s, err := a.core.Sessions.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, a.policyOf(s))
+}
+
+// putPolicy replaces a tab's session rules. Session rules only narrow the
+// global and token rules, so any principal that can use the tab may set
+// them.
+func (a *API) putPolicy(w http.ResponseWriter, r *http.Request) {
+	var req policy.Rules
+	if err := decode(r, &req); err != nil {
+		a.fail(w, err)
+		return
+	}
+	rules, err := req.Normalize()
+	if err != nil {
+		a.fail(w, errors.Join(core.ErrBadRequest, err))
+		return
+	}
+	s, err := a.core.Sessions.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	if err := a.core.SetSessionRules(r.Context(), s, rules); err != nil {
+		a.fail(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, a.policyOf(s))
+}
+
+// whoami says which token the request authenticated as and what it may do.
+func (a *API) whoami(w http.ResponseWriter, r *http.Request) {
+	p := policy.FromContext(r.Context())
+	if p == nil {
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"authenticated": false, "admin": true, "scripts": true})
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"authenticated": true, "name": p.Name, "admin": p.Admin, "scripts": p.Scripts, "rules": p.Rules,
+	})
 }
 
 // logs returns the tab's buffered console and browser log entries. Poll

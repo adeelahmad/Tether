@@ -1,0 +1,21 @@
+{
+  "deny": ["accounts.google.com", "*.bank.example"],
+  "tokens": [
+    {
+      "name": "research-agent",
+      "token_env": "TETHER_RESEARCH_TOKEN",
+      "allow": ["wikipedia.org", "arxiv.org", "github.com"],
+      "scripts": false
+    },
+    {
+      "name": "mail-triage",
+      "token_file": "mail-triage.token",
+      "allow": ["mail.google.com"]
+    },
+    {
+      "name": "ops",
+      "token_env": "TETHER_OPS_TOKEN",
+      "admin": true
+    }
+  ]
+}

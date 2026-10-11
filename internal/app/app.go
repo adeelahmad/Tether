@@ -18,6 +18,7 @@ import (
 	"github.com/adeelahmad/tether/internal/config"
 	"github.com/adeelahmad/tether/internal/core"
 	"github.com/adeelahmad/tether/internal/mcp"
+	"github.com/adeelahmad/tether/internal/policy"
 	"github.com/adeelahmad/tether/internal/proxy"
 	"github.com/adeelahmad/tether/internal/remote"
 	"github.com/adeelahmad/tether/internal/server"
@@ -41,11 +42,11 @@ type App struct {
 // Start validates exposure, connects to (or launches) Chrome, and binds the
 // listener. Call Serve to handle requests.
 func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, err error) {
-	if err := server.CheckBind(ctx, cfg.Addr, cfg.Token, cfg.InsecureAllowPublic); err != nil {
+	if err := server.CheckBind(ctx, cfg.Addr, cfg.HasAuth(), cfg.InsecureAllowPublic); err != nil {
 		return nil, err
 	}
 	loopback, _ := server.IsLoopbackAddr(ctx, cfg.Addr)
-	if !loopback && cfg.Token == "" {
+	if !loopback && !cfg.HasAuth() {
 		log.Warn("listening beyond loopback WITHOUT a token: anyone who can reach this port controls your browser")
 	}
 
@@ -82,9 +83,15 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 		return nil, fmt.Errorf("talking to chrome: %w", err)
 	}
 
+	rules := cfg.Rules
+	if rules.Empty() { // a Config built by hand rather than by config.Parse
+		if rules, err = (policy.Rules{Allow: cfg.AllowDomains, Deny: cfg.DenyDomains}).Normalize(); err != nil {
+			return nil, err
+		}
+	}
 	sessions := session.NewManager(chrome, session.Options{IdleTimeout: cfg.IdleTimeout, Logger: log})
 	a.Core = core.New(chrome, sessions, core.Options{
-		Policy:  core.DomainAllowlist(cfg.AllowDomains),
+		Policy:  core.NewRulesPolicy(rules),
 		Logger:  log,
 		Timeout: cfg.Timeout,
 	})
@@ -105,13 +112,14 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 	ui := remote.New(a.Core)
 	faces := []string{px.Name(), wd.Name(), mcpFace.Name() + " (planned)", ui.Name() + " (planned)"}
 	a.server = server.New(server.Options{
-		Token:     cfg.Token,
-		Guard:     loopback && cfg.Token == "",
-		Log:       log,
-		Proxy:     px,
-		API:       api.New(a.Core, caPEM, faces),
-		WebDriver: wd,
-		Faces:     map[string]core.Face{mcp.Prefix: mcpFace, remote.Prefix: ui},
+		Token:       cfg.Token,
+		Credentials: cfg.Credentials,
+		Guard:       loopback && !cfg.HasAuth(),
+		Log:         log,
+		Proxy:       px,
+		API:         api.New(a.Core, caPEM, faces),
+		WebDriver:   wd,
+		Faces:       map[string]core.Face{mcp.Prefix: mcpFace, remote.Prefix: ui},
 	})
 
 	var lc net.ListenConfig

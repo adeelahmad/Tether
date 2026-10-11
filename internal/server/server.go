@@ -16,13 +16,17 @@ import (
 	"github.com/adeelahmad/tether/internal/core"
 	"github.com/adeelahmad/tether/internal/httpx"
 	"github.com/adeelahmad/tether/internal/logx"
+	"github.com/adeelahmad/tether/internal/policy"
 	"github.com/adeelahmad/tether/internal/proxy"
 	"github.com/adeelahmad/tether/internal/version"
 )
 
 // Options configure a Server.
 type Options struct {
-	Token string
+	// Token is a single admin token; Credentials adds more, each with its
+	// own principal. Either enables authentication.
+	Token       string
+	Credentials []policy.Credential
 	// Guard enables the loopback Host/Origin guard on Tether's own
 	// endpoints. Set it when listening on loopback without a token.
 	Guard bool
@@ -81,9 +85,24 @@ func New(opts Options) *Server {
 	if opts.Guard {
 		h = localGuard(h)
 	}
-	h = newAuthenticator(opts.Token).wrap(h)
+	creds := opts.Credentials
+	if opts.Token != "" && !hasToken(creds, opts.Token) {
+		creds = append([]policy.Credential{{Token: opts.Token, Principal: &policy.Principal{
+			Name: policy.DefaultTokenName, Admin: true, Scripts: true,
+		}}}, creds...)
+	}
+	h = newAuthenticator(creds).wrap(h)
 	h = recoverer(lg, h)
 	return &Server{handler: h, log: lg}
+}
+
+func hasToken(creds []policy.Credential, token string) bool {
+	for _, c := range creds {
+		if c.Token == token {
+			return true
+		}
+	}
+	return false
 }
 
 // Handler returns the full handler chain.

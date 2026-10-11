@@ -21,6 +21,7 @@ import (
 	"github.com/adeelahmad/tether/internal/cdp"
 	"github.com/adeelahmad/tether/internal/core"
 	"github.com/adeelahmad/tether/internal/logx"
+	"github.com/adeelahmad/tether/internal/policy"
 	"github.com/adeelahmad/tether/internal/session"
 	"github.com/adeelahmad/tether/internal/version"
 )
@@ -177,11 +178,11 @@ func cutSpace(s string) (string, string, bool) {
 	return "", s, false
 }
 
-func (h *Handler) lookup(id string) (*wdSession, error) {
+func (h *Handler) lookup(ctx context.Context, id string) (*wdSession, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	ws, ok := h.sessions[id]
-	if !ok || ws.s.Closed() {
+	if !ok || ws.s.Closed() || !session.Visible(ctx, ws.s) {
 		return nil, wdErr(ErrInvalidSessionID, "no active session with ID "+id)
 	}
 	return ws, nil
@@ -189,7 +190,7 @@ func (h *Handler) lookup(id string) (*wdSession, error) {
 
 func (h *Handler) cmd(fn command) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ws, err := h.lookup(r.PathValue("sid"))
+		ws, err := h.lookup(r.Context(), r.PathValue("sid"))
 		if err != nil {
 			writeError(w, err)
 			return
@@ -252,6 +253,9 @@ type TetherOptions struct {
 	// KeepTab leaves the tab open when the session is deleted. It defaults
 	// to true for attached tabs and false for new ones.
 	KeepTab *bool `json:"keepTab"`
+	// Policy sets session rules on the tab: domains it may (allow) and may
+	// not (deny) navigate to, on top of the global and token rules.
+	Policy *policy.Rules `json:"policy"`
 }
 
 func mergeCapabilities(body []byte) (map[string]any, error) {
@@ -301,6 +305,13 @@ func (h *Handler) newSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var rules policy.Rules
+	if opts.Policy != nil {
+		if rules, err = opts.Policy.Normalize(); err != nil {
+			writeError(w, wdErr(ErrInvalidArgument, "tether:options.policy: "+err.Error()))
+			return
+		}
+	}
 	timeouts := Timeouts{Script: ptr(int64(30000)), PageLoad: 300000, Implicit: 0}
 	if raw, ok := caps["timeouts"]; ok {
 		b, _ := json.Marshal(raw)
@@ -333,6 +344,18 @@ func (h *Handler) newSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, wdErr(ErrSessionNotCreated, err.Error()))
 		return
 	}
+	if opts.Policy != nil || opts.TabID == "" {
+		err = h.core.SetSessionRules(ctx, s, rules)
+	} else {
+		err = h.core.Prepare(ctx, s)
+	}
+	if err != nil {
+		if opts.TabID == "" {
+			_ = h.core.Sessions.Close(context.WithoutCancel(ctx), s.ID, false)
+		}
+		writeError(w, wdErr(ErrSessionNotCreated, err.Error()))
+		return
+	}
 	if opts.KeepTab != nil {
 		keep = *opts.KeepTab
 	}
@@ -360,7 +383,7 @@ func (h *Handler) newSession(w http.ResponseWriter, r *http.Request) {
 			"strictFileInteractability": false,
 			"unhandledPromptBehavior":   "dismiss and notify",
 			"timeouts":                  timeouts,
-			"tether:options":            map[string]any{"tabId": s.ID, "keepTab": keep},
+			"tether:options":            map[string]any{"tabId": s.ID, "keepTab": keep, "policy": s.Rules()},
 		},
 	})
 }
@@ -369,6 +392,11 @@ func (h *Handler) deleteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("sid")
 	h.mu.Lock()
 	ws, ok := h.sessions[id]
+	if ok && !session.Visible(r.Context(), ws.s) {
+		h.mu.Unlock()
+		writeError(w, wdErr(ErrInvalidSessionID, "no active session with ID "+id))
+		return
+	}
 	delete(h.sessions, id)
 	h.mu.Unlock()
 	if ok && !ws.keepTab {

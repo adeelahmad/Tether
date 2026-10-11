@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,7 +18,11 @@ type chromeTab struct {
 	b       *Chrome
 	id      string
 	session string
-	logs    *logBuffer // nil when capture is off
+
+	guardMu    sync.Mutex // serialises Guard calls
+	guardCheck atomic.Pointer[func(string) error]
+	guardUnsub func()
+	logs       *logBuffer // nil when capture is off
 }
 
 var _ Tab = (*chromeTab)(nil)

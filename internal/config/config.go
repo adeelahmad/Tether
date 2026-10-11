@@ -36,6 +36,7 @@ type Config struct {
 	AllowDomains []string
 	DataDir      string
 	NoMITM       bool
+	MCP          bool
 
 	LogLevel  string
 	LogFormat string
@@ -92,6 +93,7 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 	str(&allow, "allow-domains", "TETHER_ALLOW_DOMAINS", "", "comma-separated domain allowlist (default: all)")
 	str(&c.DataDir, "data-dir", "TETHER_DATA_DIR", DefaultDataDir(), "where the local CA and launched profile live")
 	boolean(&c.NoMITM, "no-mitm", "TETHER_NO_MITM", false, "refuse HTTPS CONNECT instead of intercepting it with the local CA")
+	boolean(&c.MCP, "mcp", "TETHER_MCP", true, "serve the MCP face for AI agents at /mcp")
 	str(&c.LogLevel, "log-level", "TETHER_LOG_LEVEL", "info", "debug, info, warn or error")
 	str(&c.LogFormat, "log-format", "TETHER_LOG_FORMAT", "text", "text or json")
 

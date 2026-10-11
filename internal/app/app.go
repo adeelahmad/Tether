@@ -100,9 +100,19 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 
 	px := proxy.New(a.Core, ca, log)
 	wd := webdriver.New(a.Core, log)
-	mcpFace := mcp.New(a.Core)
 	ui := remote.New(a.Core)
-	faces := []string{px.Name(), wd.Name(), mcpFace.Name() + " (planned)", ui.Name() + " (planned)"}
+	faces := []string{px.Name(), wd.Name()}
+	extra := map[string]core.Face{remote.Prefix: ui}
+	if cfg.MCP {
+		ttl := cfg.IdleTimeout
+		if ttl <= 0 {
+			ttl = 100 * 365 * 24 * time.Hour // --idle-timeout 0: never expire
+		}
+		mcpFace := mcp.New(a.Core, mcp.Options{Logger: log, SessionTTL: ttl})
+		extra[mcp.Prefix] = mcpFace
+		faces = append(faces, mcpFace.Name())
+	}
+	faces = append(faces, ui.Name()+" (planned)")
 	a.server = server.New(server.Options{
 		Token:     cfg.Token,
 		Guard:     loopback && cfg.Token == "",
@@ -110,7 +120,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 		Proxy:     px,
 		API:       api.New(a.Core, caPEM, faces),
 		WebDriver: wd,
-		Faces:     map[string]core.Face{mcp.Prefix: mcpFace, remote.Prefix: ui},
+		Faces:     extra,
 	})
 
 	var lc net.ListenConfig

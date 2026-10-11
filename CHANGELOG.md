@@ -26,7 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--token` or `--insecure-allow-public`, bearer/basic token auth, a
   loopback Host/Origin guard against DNS rebinding, a per-session domain
   allowlist policy seam, and log redaction of tokens and cookies.
-- MCP and remote-browser UI faces as documented stubs on the shared core.
+- MCP server face at `/mcp` (Streamable HTTP; MCP 2025-06-18, 2025-03-26 and
+  2024-11-05) with 16 browser tools: tabs, navigation, accessibility-style
+  snapshots with stable element refs, click, type, keys, select, scroll,
+  wait, JavaScript, screenshots and in-tab `fetch()` with the user's cookies.
+  Shares tabs, auth, the loopback guard and `--allow-domains` with the other
+  faces; `--mcp=false` turns it off. See `docs/MCP.md`.
+- `tether mcp`: a stdio bridge for MCP clients that don't speak HTTP
+  (Claude Desktop, IDEs), local or across a tailnet.
+- Remote-browser UI face as a documented stub on the shared core.
+- Screenshots of idle background tabs no longer hang: Tether brings the tab
+  to the front and retries, as ChromeDriver does (WebDriver and MCP).
 - Sprint Zero: Makefile, golangci-lint, CI (lint → test + coverage →
   build matrix → govulncheck), CodeQL, Dependabot, GoReleaser (archives,
   checksums, multi-arch Docker image, Homebrew cask), community docs.

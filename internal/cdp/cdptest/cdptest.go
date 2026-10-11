@@ -142,6 +142,21 @@ type Tab struct {
 	Calls       []Call
 	CallResult  json.RawMessage
 	EvalResult  json.RawMessage
+
+	// OnCall, when set, answers CallFunction instead of CallResult.
+	OnCall func(decl string, opts cdp.CallOptions) (*cdp.Remote, error)
+	// Props answers Properties by object ID.
+	Props map[string][]cdp.Property
+	// NodeIDs answers NodeID by object ID (default 1).
+	NodeIDs map[string]int
+	// ResolveErr, when set, fails ResolveNode (a stale element).
+	ResolveErr error
+
+	Clicks  [][2]float64
+	Keys    []cdp.KeyEvent
+	Shots   []*cdp.Rect
+	Moves   []int
+	Reloads int
 }
 
 var _ cdp.Tab = (*Tab)(nil)
@@ -182,15 +197,31 @@ func (t *Tab) Navigate(_ context.Context, url string, _ cdp.Wait) (*cdp.Document
 	return &cdp.Document{URL: url, Status: p.Status, Header: h.Clone(), MimeType: p.MimeType, RequestID: "req-" + url}, nil
 }
 
-func (t *Tab) Reload(context.Context, cdp.Wait) error { return nil }
-func (t *Tab) History(context.Context, int) error     { return nil }
+func (t *Tab) Reload(context.Context, cdp.Wait) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Reloads++
+	return nil
+}
+
+func (t *Tab) History(_ context.Context, delta int) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Moves = append(t.Moves, delta)
+	return nil
+}
 
 func (t *Tab) Evaluate(_ context.Context, expr string, _ bool) (json.RawMessage, error) {
 	if t.EvalResult != nil {
 		return t.EvalResult, nil
 	}
-	if expr == "location.href" {
+	switch expr {
+	case "location.href":
 		return json.Marshal(t.url)
+	case "document.readyState":
+		return json.Marshal("complete")
+	case "document.title":
+		return json.Marshal("")
 	}
 	return json.Marshal(t.page().HTML)
 }
@@ -198,29 +229,68 @@ func (t *Tab) Evaluate(_ context.Context, expr string, _ bool) (json.RawMessage,
 func (t *Tab) CallFunction(_ context.Context, decl string, opts cdp.CallOptions) (*cdp.Remote, error) {
 	t.mu.Lock()
 	t.Calls = append(t.Calls, Call{Decl: decl, Args: opts.Args})
-	res := t.CallResult
+	res, on := t.CallResult, t.OnCall
 	t.mu.Unlock()
+	if on != nil {
+		return on(decl, opts)
+	}
 	if res == nil {
 		res = json.RawMessage("null")
 	}
 	return &cdp.Remote{Type: "object", Value: res}, nil
 }
 
-func (t *Tab) Properties(context.Context, string) ([]cdp.Property, error) { return nil, nil }
-func (t *Tab) Release(context.Context, string) error                      { return nil }
-func (t *Tab) NodeID(context.Context, string) (int, error)                { return 1, nil }
-func (t *Tab) ResolveNode(context.Context, int) (string, error)           { return "obj", nil }
+func (t *Tab) Properties(_ context.Context, id string) ([]cdp.Property, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.Props[id], nil
+}
+
+func (t *Tab) Release(context.Context, string) error { return nil }
+
+func (t *Tab) NodeID(_ context.Context, id string) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if n, ok := t.NodeIDs[id]; ok {
+		return n, nil
+	}
+	return 1, nil
+}
+
+func (t *Tab) ResolveNode(_ context.Context, id int) (string, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.ResolveErr != nil {
+		return "", t.ResolveErr
+	}
+	return fmt.Sprintf("node%d", id), nil
+}
 
 func (t *Tab) ResponseBody(context.Context, string) ([]byte, error) {
 	return t.page().Body, nil
 }
 
-func (t *Tab) Screenshot(context.Context, *cdp.Rect) ([]byte, error) {
+func (t *Tab) Screenshot(_ context.Context, clip *cdp.Rect) ([]byte, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Shots = append(t.Shots, clip)
 	return []byte("\x89PNG fake"), nil
 }
 
 func (t *Tab) Cookies(context.Context, []string) ([]cdp.Cookie, error) { return nil, nil }
 func (t *Tab) SetCookie(context.Context, cdp.Cookie) error             { return nil }
 func (t *Tab) DeleteCookie(context.Context, string, string) error      { return nil }
-func (t *Tab) Click(context.Context, float64, float64) error           { return nil }
-func (t *Tab) Key(context.Context, cdp.KeyEvent) error                 { return nil }
+
+func (t *Tab) Click(_ context.Context, x, y float64) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Clicks = append(t.Clicks, [2]float64{x, y})
+	return nil
+}
+
+func (t *Tab) Key(_ context.Context, k cdp.KeyEvent) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Keys = append(t.Keys, k)
+	return nil
+}

@@ -1,7 +1,7 @@
 // Package session maps Tether sessions onto real Chrome tabs.
 //
 // A session is exactly one CDP page target, keyed by its target (tab) ID.
-// Every face — proxy, WebDriver, and later MCP and the remote UI — resolves
+// Every face — proxy, WebDriver, MCP, and later the remote UI — resolves
 // requests to a Session through the same Manager, so a tab opened by one
 // face can be driven by another.
 package session

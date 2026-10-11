@@ -25,6 +25,8 @@ within 72 hours and to ship a fix or mitigation for confirmed issues within
 | Session cookie never forwarded | `tether_tab` is stripped before any request reaches the page or the site. Site `Set-Cookie` headers are not relayed to clients; the browser keeps its cookies. |
 | Background tabs; adopted tabs never closed | Tether doesn't steal focus, and only closes tabs it opened. |
 | Launched Chrome binds DevTools to `127.0.0.1` | The DevTools port itself is never exposed by Tether. |
+| Remote UI login cookie is `HttpOnly`, `SameSite=Strict`, path-scoped and UI-only | Browsers can't send bearer tokens, so `/remote/login` trades the token for an HMAC-of-token cookie that scripts can't read, other sites can't trigger, and the proxy/API/WebDriver never accept. Rotating the token signs every browser out. |
+| Remote UI pages are locked down | Strict CSP (`script-src 'self'`, `frame-ancestors 'none'`), `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`; the websocket rejects foreign `Origin`s. `--no-remote` turns the UI off entirely. |
 
 ## Recommended exposure: Tailscale
 
@@ -64,6 +66,8 @@ trusted to use the browser. Tether is not a multi-tenant isolation layer.
 | Token leaks via `curl -x http://user:token@…` history | — | Shell history; prefer `--proxy-header "Proxy-Authorization: Bearer $TETHER_TOKEN"`. |
 | Local CA key theft | Key written `0600` in the per-user config dir | Anyone with your user account already has your browser. Only trust the CA in clients that use Tether; don't add it to your OS trust store unless you understand the implication. |
 | An agent/script navigates somewhere it shouldn't | `--allow-domains` policy enforced for every face | Allowlist is per-instance today; per-session/agent policies are the planned extension. |
+| A site embeds or scripts the remote UI (clickjacking, cross-site websocket) | `frame-ancestors 'none'`, `X-Frame-Options: DENY`, Origin check on the websocket, `SameSite=Strict` cookie, Origin/`Sec-Fetch-Site` check on login | — |
+| Remote UI token guessing | Login requires the full token (≥16 chars) and each failure is delayed | Use a long random token (`openssl rand -hex 32`). |
 | Tether used to read a page the user has open | Only tabs Tether opened, or tabs explicitly addressed by ID, are driven | Any authenticated client can address any tab by ID. |
 | Chrome DevTools port exposed | `--launch` binds it to loopback; Tether never re-exposes it | If you start Chrome yourself with `--remote-debugging-address=0.0.0.0`, that is outside Tether's control. |
 | Denial of service (huge bodies, many tabs) | 32 MiB request body cap; per-tab serialisation; idle reaping | A token holder can open many tabs. |

@@ -87,7 +87,11 @@ func serve(args []string, stdout, stderr io.Writer) int {
 	)
 	fmt.Fprintf(stdout, "\n  Tether %s is serving %s on http://%s\n", version.Version, a.Browser, a.Addr)
 	fmt.Fprintf(stdout, "  Proxy:     curl -x http://%s --cacert <(curl -s http://%s/tether/v1/ca.pem) https://example.com\n", a.Addr, a.Addr)
-	fmt.Fprintf(stdout, "  WebDriver: http://%s  (Selenium remote URL)\n\n", a.Addr)
+	fmt.Fprintf(stdout, "  WebDriver: http://%s  (Selenium remote URL)\n", a.Addr)
+	if !cfg.NoRemote {
+		fmt.Fprintf(stdout, "  Remote UI: http://%s/remote/  (watch and drive tabs from any browser)\n", a.Addr)
+	}
+	fmt.Fprintln(stdout)
 
 	if err := a.Serve(ctx); err != nil {
 		log.Error("server stopped", "err", err)

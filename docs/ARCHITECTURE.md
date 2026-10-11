@@ -21,7 +21,7 @@ flowchart LR
     P[Proxy face<br/>HTTP + CONNECT/MITM]
     W[WebDriver face<br/>W3C common set]
     M[MCP face<br/><i>stub</i>]
-    R[Remote UI face<br/><i>stub</i>]
+    R[Remote UI face<br/>screencast + input]
     A[Control API<br/>/tether/v1]
     subgraph core[core]
       S[session.Manager<br/>tab ⇄ session]
@@ -36,7 +36,7 @@ flowchart LR
   C1 --> G --> P
   C2 --> G --> W
   C3 -.-> G -.-> M
-  C4 -.-> G -.-> R
+  C4 --> G --> R
   G --> A
   P & W & M & R & A --> E
   E --> S
@@ -59,7 +59,8 @@ flowchart LR
 | `internal/webdriver` | W3C WebDriver face (see [WEBDRIVER.md](WEBDRIVER.md)). |
 | `internal/api` | Control plane: health, tabs, eval, CA download. |
 | `internal/server` | Listener, routing, token auth, loopback guard, graceful shutdown, exposure checks. |
-| `internal/mcp`, `internal/remote` | Planned faces, mounted and answering `501` today. |
+| `internal/remote` | Remote-browser face: the embedded web app, a per-tab screencast hub, and the websocket input protocol (see [REMOTE.md](REMOTE.md)). |
+| `internal/mcp` | Planned face, mounted and answering `501` today. |
 | `internal/certs`, `internal/logx`, `internal/config`, `internal/version`, `internal/httpx` | Supporting pieces. |
 
 ## The session model
@@ -131,10 +132,42 @@ proxy auth and Tether control headers never reach the page.
 | HTTP proxy | **Shipping** | `Sessions.Resolve`, `Core.Do` |
 | WebDriver | **Shipping** | `Sessions.Create/Get/Close`, `Core.Navigate`, `cdp.Tab` primitives |
 | MCP server | Stub (`/mcp` → 501) | Will map tools (`navigate`, `read_page`, `click`, `type`, `eval`, `screenshot`, `tabs`) onto the same calls. `core.Policy` becomes per-agent permissions. Streamable HTTP transport on the same listener, so it inherits auth and Tailscale exposure. |
-| Remote UI | Stub (`/remote` → 501) | Will stream a tab with `Page.startScreencast` (WebRTC later) and forward input through `cdp.Tab.Click`/`Key`, letting a person watch or take over exactly the tab an agent is driving. |
+| Remote UI | **Shipping** | `Sessions.Get/Create/Close`, `Core.Navigate` (address bar, under policy), `cdp.Tab` (`Key`, `Info`, history) and the optional `cdp.Screen` (screencast, mouse, text, dialogs). A person can watch or take over exactly the tab an agent is driving. |
 
 Every face implements `core.Face` (`Name()` + `http.Handler`) and is mounted
 by the server; adding one is a new package and one line in `internal/app`.
+
+## The remote UI
+
+```mermaid
+sequenceDiagram
+  participant B as Person's browser (/remote/)
+  participant R as Remote face
+  participant H as Screencast hub
+  participant Ch as Chrome tab
+  B->>R: GET /remote/ws/{tab} (token or UI cookie, same Origin)
+  R->>H: join(tab)
+  H->>Ch: Page.startScreencast (first viewer only)
+  loop every paint
+    Ch-->>H: Page.screencastFrame (JPEG)
+    H-->>B: binary frame, newest wins per viewer
+    H->>Ch: screencastFrameAck
+  end
+  Note over H,Ch: quiet or background tab: Page.captureScreenshot keyframes
+  B->>R: {"t":"mouse"|"key"|"text"|"wheel"}
+  R->>Ch: Input.dispatch* (no session lock: input never waits on a navigation)
+  B->>R: {"t":"nav","url":…}
+  R->>Ch: Core.Navigate under the session lock and Policy
+```
+
+Screencasting is an optional capability, `cdp.Screen`, that the Chrome tab
+implements; faces that never need video don't depend on it. One hub runs at
+most one screencast per tab and fans frames out to every viewer, each with a
+one-frame buffer, so a slow viewer drops frames instead of slowing the others.
+Input bypasses the per-tab lock on purpose: a person must be able to click
+"Cancel" while a script's navigation hangs. Watching a tab touches its
+session, so it isn't reaped as idle. The server's auth layer, not the face,
+owns the UI login cookie, and it is only honoured under `/remote/`.
 
 ## Design choices
 

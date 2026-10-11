@@ -142,6 +142,16 @@ type Tab struct {
 	Calls       []Call
 	CallResult  json.RawMessage
 	EvalResult  json.RawMessage
+
+	// Input and screencast state; see screen.go.
+	Keys          []cdp.KeyEvent
+	Mice          []cdp.MouseEvent
+	Texts         []string
+	Fronted       int
+	DialogAnswers []DialogAnswer
+	casts         int
+	dialog        *cdp.Dialog
+	dialogFns     []func(cdp.Dialog)
 }
 
 var _ cdp.Tab = (*Tab)(nil)
@@ -223,4 +233,10 @@ func (t *Tab) Cookies(context.Context, []string) ([]cdp.Cookie, error) { return 
 func (t *Tab) SetCookie(context.Context, cdp.Cookie) error             { return nil }
 func (t *Tab) DeleteCookie(context.Context, string, string) error      { return nil }
 func (t *Tab) Click(context.Context, float64, float64) error           { return nil }
-func (t *Tab) Key(context.Context, cdp.KeyEvent) error                 { return nil }
+
+func (t *Tab) Key(_ context.Context, k cdp.KeyEvent) error {
+	t.mu.Lock()
+	t.Keys = append(t.Keys, k)
+	t.mu.Unlock()
+	return nil
+}

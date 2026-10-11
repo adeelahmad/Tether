@@ -103,12 +103,18 @@ func (a *authenticator) check(header string) bool {
 	return false
 }
 
-func (a *authenticator) wrap(next http.Handler) http.Handler {
-	if a == nil {
-		return next
-	}
+func (a *authenticator) wrap(next http.Handler, uiPrefix string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if proxy.IsProxyRequest(r) {
+		isProxy := proxy.IsProxyRequest(r)
+		if !isProxy && underPrefix(r.URL.Path, uiPrefix) {
+			uiGate(a, uiPrefix, w, r, next)
+			return
+		}
+		if a == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if isProxy {
 			if !a.check(r.Header.Get("Proxy-Authorization")) {
 				w.Header().Set("Proxy-Authenticate", `Basic realm="tether"`)
 				httpx.WriteError(w, http.StatusProxyAuthRequired, core.CodeUnauthorized, "proxy authentication required")
@@ -116,12 +122,16 @@ func (a *authenticator) wrap(next http.Handler) http.Handler {
 			}
 			r.Header.Del("Proxy-Authorization")
 		} else if !a.check(r.Header.Get("Authorization")) {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="tether"`)
-			httpx.WriteError(w, http.StatusUnauthorized, core.CodeUnauthorized, "missing or invalid bearer token")
+			a.deny(w)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (a *authenticator) deny(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Bearer realm="tether"`)
+	httpx.WriteError(w, http.StatusUnauthorized, core.CodeUnauthorized, "missing or invalid bearer token")
 }
 
 // localGuard protects token-less loopback deployments from the browser

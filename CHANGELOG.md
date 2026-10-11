@@ -26,7 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--token` or `--insecure-allow-public`, bearer/basic token auth, a
   loopback Host/Origin guard against DNS rebinding, a per-session domain
   allowlist policy seam, and log redaction of tokens and cookies.
-- MCP and remote-browser UI faces as documented stubs on the shared core.
+- Remote-browser web UI at `/remote/`, embedded in the binary: live video of
+  any Chrome tab (CDP screencast, with screenshot keyframes for quiet and
+  background tabs), mouse, wheel, touch, keyboard (IME and mobile keyboards
+  included) and clipboard forwarding, JavaScript dialog relay, address bar,
+  back/forward/reload, open/close tabs, watch-only mode and a phone layout.
+  One screencast per tab is shared by all viewers. With `--token`, a sign-in
+  page trades the token for an `HttpOnly`, `SameSite=Strict`, UI-only cookie.
+  New flags `--no-remote` and `--remote-quality`. See `docs/REMOTE.md`.
+- MCP face as a documented stub on the shared core.
 - Sprint Zero: Makefile, golangci-lint, CI (lint → test + coverage →
   build matrix → govulncheck), CodeQL, Dependabot, GoReleaser (archives,
   checksums, multi-arch Docker image, Homebrew cask), community docs.

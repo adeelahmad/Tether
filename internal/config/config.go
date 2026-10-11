@@ -37,6 +37,9 @@ type Config struct {
 	DataDir      string
 	NoMITM       bool
 
+	NoRemote      bool
+	RemoteQuality int
+
 	LogLevel  string
 	LogFormat string
 }
@@ -76,6 +79,15 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 		fs.DurationVar(p, name, def, usage+" [$"+envName+"]")
 	}
 
+	integer := func(p *int, name, envName string, def int, usage string) {
+		if v, ok := env(envName); ok {
+			if n, err := strconv.Atoi(v); err == nil {
+				def = n
+			}
+		}
+		fs.IntVar(p, name, def, usage+" [$"+envName+"]")
+	}
+
 	var allow, tokenFile, chromeArgs string
 	str(&c.Addr, "addr", "TETHER_ADDR", DefaultAddr, "listen address (loopback by default)")
 	str(&c.Token, "token", "TETHER_TOKEN", "", "bearer token required on every request (required for non-loopback --addr)")
@@ -92,6 +104,8 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 	str(&allow, "allow-domains", "TETHER_ALLOW_DOMAINS", "", "comma-separated domain allowlist (default: all)")
 	str(&c.DataDir, "data-dir", "TETHER_DATA_DIR", DefaultDataDir(), "where the local CA and launched profile live")
 	boolean(&c.NoMITM, "no-mitm", "TETHER_NO_MITM", false, "refuse HTTPS CONNECT instead of intercepting it with the local CA")
+	boolean(&c.NoRemote, "no-remote", "TETHER_NO_REMOTE", false, "disable the remote-browser web UI at /remote/")
+	integer(&c.RemoteQuality, "remote-quality", "TETHER_REMOTE_QUALITY", 70, "JPEG quality of the remote UI video, 1-100")
 	str(&c.LogLevel, "log-level", "TETHER_LOG_LEVEL", "info", "debug, info, warn or error")
 	str(&c.LogFormat, "log-format", "TETHER_LOG_FORMAT", "text", "text or json")
 
@@ -130,6 +144,9 @@ func (c *Config) Validate() error {
 	}
 	if c.IdleTimeout < 0 {
 		return errors.New("--idle-timeout must not be negative")
+	}
+	if c.RemoteQuality < 1 || c.RemoteQuality > 100 {
+		return errors.New("--remote-quality must be between 1 and 100")
 	}
 	if c.Token != "" && len(c.Token) < 16 {
 		return errors.New("--token must be at least 16 characters")

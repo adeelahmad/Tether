@@ -174,6 +174,10 @@ type KeyEvent struct {
 	Text      string `json:"text,omitempty"`
 	KeyCode   int    `json:"windowsVirtualKeyCode,omitempty"`
 	Modifiers int    `json:"modifiers,omitempty"`
+	// Commands are editing commands (e.g. "selectAll", "copy") to run with
+	// the key. macOS Chrome binds shortcuts to these at the menu level, so
+	// synthetic keys alone do not trigger them.
+	Commands []string `json:"commands,omitempty"`
 }
 
 // JSError is an exception thrown by page JavaScript.

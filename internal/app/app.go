@@ -35,6 +35,7 @@ type App struct {
 	listener net.Listener
 	browser  *cdp.Chrome
 	launched *cdp.Process
+	ui       *remote.UI
 	log      *slog.Logger
 }
 
@@ -101,8 +102,19 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 	px := proxy.New(a.Core, ca, log)
 	wd := webdriver.New(a.Core, log)
 	mcpFace := mcp.New(a.Core)
-	ui := remote.New(a.Core)
-	faces := []string{px.Name(), wd.Name(), mcpFace.Name() + " (planned)", ui.Name() + " (planned)"}
+	faces := []string{px.Name(), wd.Name(), mcpFace.Name() + " (planned)"}
+	mounted := map[string]core.Face{mcp.Prefix: mcpFace}
+	uiPrefix := ""
+	if !cfg.NoRemote {
+		a.ui = remote.New(a.Core, remote.Options{
+			Screencast: cdp.ScreencastOptions{Quality: cfg.RemoteQuality},
+			Auth:       cfg.Token != "",
+			Logger:     log,
+		})
+		faces = append(faces, a.ui.Name())
+		mounted[remote.Prefix] = a.ui
+		uiPrefix = remote.Prefix
+	}
 	a.server = server.New(server.Options{
 		Token:     cfg.Token,
 		Guard:     loopback && cfg.Token == "",
@@ -110,7 +122,8 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 		Proxy:     px,
 		API:       api.New(a.Core, caPEM, faces),
 		WebDriver: wd,
-		Faces:     map[string]core.Face{mcp.Prefix: mcpFace, remote.Prefix: ui},
+		Faces:     mounted,
+		UIPrefix:  uiPrefix,
 	})
 
 	var lc net.ListenConfig
@@ -138,6 +151,12 @@ func (a *App) Serve(ctx context.Context) error {
 		}
 	}()
 	go a.Core.Sessions.Run(ctx)
+	if a.ui != nil {
+		go func() {
+			<-ctx.Done()
+			a.ui.Close() // websockets are hijacked; graceful shutdown won't end them
+		}()
+	}
 
 	err := a.server.Serve(ctx, a.listener, 10*time.Second)
 

@@ -34,7 +34,8 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) first. In short:
 | `internal/core` | The engine every face calls: `Do`, `Eval`, `Navigate`, `Policy` |
 | `internal/proxy` | HTTP/HTTPS forward-proxy face |
 | `internal/webdriver` | W3C WebDriver face |
-| `internal/mcp`, `internal/remote` | Planned faces (stubs) |
+| `internal/remote` | Remote-browser UI face; its web app lives in `internal/remote/assets` (plain HTML/CSS/JS, no build step) |
+| `internal/mcp` | Planned face (stub) |
 | `internal/server`, `internal/api` | Listener, auth, guard, control API |
 
 Faces stay thin. If a change needs browser logic, it almost certainly

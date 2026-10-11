@@ -194,6 +194,10 @@ curl -x "http://tether:$TETHER_TOKEN@my-laptop:8787" --cacert tether-ca.pem http
 # or watch and drive it from your phone: http://my-laptop:8787/remote/
 ```
 
+`tether serve --launch --tailscale` (or `[tailscale] enabled = true` in the
+config file) picks the tailnet address for you, and `--tailscale-publish serve`
+adds an HTTPS name via `tailscale serve`; see [docs/CONFIG.md](docs/CONFIG.md#tailscale).
+
 Tether refuses to listen beyond loopback without a token. Read
 [SECURITY.md](SECURITY.md) before exposing it anywhere.
 
@@ -213,25 +217,37 @@ curl -s -H "Authorization: Bearer $TETHER_RESEARCH_TOKEN" -X POST http://127.0.0
 
 ## Configuration
 
-Every flag has a `TETHER_*` environment variable; flags win.
+Every flag has a `TETHER_*` environment variable, and almost everything can
+also go in a TOML config file: `~/.config/tether/config.toml` is read if it
+exists, or pass `--config`. Precedence is flag > environment > file > default.
+The file also holds extra tokens, headers Chrome sends, cookies to seed, the
+Chrome profile to launch and MCP OAuth. Start from
+[`tether.example.toml`](tether.example.toml); the full reference is
+[docs/CONFIG.md](docs/CONFIG.md).
 
 | Flag | Default | |
 |---|---|---|
+| `--config` | `~/.config/tether/config.toml` if present | TOML config file — see [docs/CONFIG.md](docs/CONFIG.md) |
 | `--addr` | `127.0.0.1:8787` | Listen address |
 | `--token` / `--token-file` | — | Bearer token (≥16 chars); required off-loopback |
 | `--insecure-allow-public` | `false` | Allow off-loopback with no token (don't) |
 | `--chrome` | `auto` | `auto`, a port, `host:port`, `http://…`, `ws://…`, or a `DevToolsActivePort` path |
 | `--launch` / `--headless` | `false` | Launch a dedicated Chrome (persistent profile under `--data-dir`) |
 | `--chrome-bin`, `--chrome-args`, `--profile-dir` | auto | With `--launch` |
+| `--chrome-profile` | last used | With `--launch`: profile inside `--profile-dir`, e.g. `"Profile 1"` |
 | `--idle-timeout` | `15m` | Close tabs Tether opened after inactivity (`0` = never) |
 | `--timeout` | `60s` | Default per-request timeout |
 | `--console-buffer` | `1000` | Console/log entries kept per tab (`0` = no capture) |
 | `--allow-domains` | all | Comma-separated navigation allowlist (applies to every face) |
 | `--deny-domains` | none | Comma-separated denylist; deny beats allow |
-| `--policy-file` | — | JSON file with per-token rules and tokens — see [docs/POLICIES.md](docs/POLICIES.md) |
+| `--policy-file` | — | JSON or TOML file with per-token rules and tokens — see [docs/POLICIES.md](docs/POLICIES.md) |
 | `--data-dir` | user config dir | Local CA and launched profile |
 | `--no-mitm` | `false` | Refuse HTTPS `CONNECT` instead of intercepting |
 | `--mcp` | `true` | Serve the MCP face at `/mcp` |
+| `--mcp-oauth` | `false` | Let MCP clients sign in with OAuth — see [docs/CONFIG.md](docs/CONFIG.md#mcp-oauth) |
+| `--public-url` | from request | Externally visible origin (OAuth issuer) |
+| `--tailscale` | `false` | Listen on this machine's tailnet address (keeps the `--addr` port) |
+| `--tailscale-publish` | — | `serve` or `funnel`: also publish over HTTPS via the tailscale CLI |
 | `--no-remote` | `false` | Don't serve the remote-browser UI at `/remote/` |
 | `--remote-quality` | `70` | JPEG quality of the remote UI video (1–100) |
 | `--log-level`, `--log-format` | `info`, `text` | `json` for machines; secrets are always redacted |

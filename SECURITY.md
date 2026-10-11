@@ -27,6 +27,7 @@ within 72 hours and to ship a fix or mitigation for confirmed issues within
 | Background tabs; adopted tabs never closed | Tether doesn't steal focus, and only closes tabs it opened. |
 | Launched Chrome binds DevTools to `127.0.0.1` | The DevTools port itself is never exposed by Tether. |
 | Remote UI login cookie is `HttpOnly`, `SameSite=Strict`, path-scoped and UI-only | Browsers can't send bearer tokens, so `/remote/login` trades the token for an HMAC-of-token cookie that scripts can't read, other sites can't trigger, and the proxy/API/WebDriver never accept. Rotating the token signs every browser out. |
+| MCP OAuth is opt-in and scoped | With `[mcp.oauth]`, the consent page requires a Tether token (with a delay on wrong guesses, same-origin posts only, `frame-ancestors 'none'`), PKCE S256 is mandatory, redirect URIs must be https, loopback http, or an app scheme, and OAuth access tokens are accepted on `/mcp` only. Grants are bound to the approving token and die with it; deleting `oauth.key` revokes all. |
 | Remote UI pages are locked down | Strict CSP (`script-src 'self'`, `frame-ancestors 'none'`), `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`; the websocket rejects foreign `Origin`s. `--no-remote` turns the UI off entirely. |
 
 ## Recommended exposure: Tailscale
@@ -46,8 +47,13 @@ Then, from any machine on your tailnet:
 curl -x "http://tether:$TETHER_TOKEN@my-laptop:8787" --cacert tether-ca.pem https://github.com/
 ```
 
+Or, in the [config file](docs/CONFIG.md#tailscale), `[tailscale] enabled =
+true` does the same, and `publish = "serve"` adds an HTTPS name on your
+tailnet via `tailscale serve`.
+
 Use Tailscale ACLs to limit which devices can reach port 8787. Avoid
-`tailscale funnel` (that is public internet exposure).
+`tailscale funnel` (`publish = "funnel"`) unless you need it: that is public
+internet exposure, and Tether refuses either publish mode without a token.
 
 ## Threat model
 

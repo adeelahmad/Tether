@@ -19,11 +19,13 @@ import (
 	"github.com/adeelahmad/tether/internal/core"
 	"github.com/adeelahmad/tether/internal/frontdoor"
 	"github.com/adeelahmad/tether/internal/mcp"
+	"github.com/adeelahmad/tether/internal/oauth"
 	"github.com/adeelahmad/tether/internal/policy"
 	"github.com/adeelahmad/tether/internal/proxy"
 	"github.com/adeelahmad/tether/internal/remote"
 	"github.com/adeelahmad/tether/internal/server"
 	"github.com/adeelahmad/tether/internal/session"
+	"github.com/adeelahmad/tether/internal/tailnet"
 	"github.com/adeelahmad/tether/internal/webdriver"
 )
 
@@ -38,12 +40,20 @@ type App struct {
 	browser  *cdp.Chrome
 	launched *cdp.Process
 	ui       *remote.UI
-	log      *slog.Logger
+	// unpublish removes the tailscale serve/funnel config Tether added.
+	unpublish func(context.Context) error
+	log       *slog.Logger
 }
 
 // Start validates exposure, connects to (or launches) Chrome, and binds the
 // listener. Call Serve to handle requests.
 func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, err error) {
+	ts := tailnet.CLI{Bin: cfg.Tailscale.Bin}
+	if cfg.Tailscale.Enabled || cfg.Tailscale.Publish != "" {
+		if err := resolveTailnet(ctx, cfg, ts, log); err != nil {
+			return nil, err
+		}
+	}
 	if err := server.CheckBind(ctx, cfg.Addr, cfg.HasAuth(), cfg.InsecureAllowPublic); err != nil {
 		return nil, err
 	}
@@ -61,13 +71,19 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 
 	wsURL := ""
 	if cfg.Launch {
-		a.launched, err = cdp.Launch(ctx, cdp.LaunchOptions{Bin: cfg.ChromeBin, UserDataDir: cfg.ProfileDir, Headless: cfg.Headless, ExtraArgs: cfg.ChromeArgs})
+		a.launched, err = cdp.Launch(ctx, cdp.LaunchOptions{
+			Bin: cfg.ChromeBin, UserDataDir: cfg.ProfileDir, Profile: cfg.ChromeProfile,
+			Headless: cfg.Headless, ExtraArgs: cfg.ChromeArgs,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("launching chrome: %w", err)
 		}
 		wsURL = a.launched.WSURL
-		log.Info("launched chrome", "profile", cfg.ProfileDir, "headless", cfg.Headless)
+		log.Info("launched chrome", "user_data_dir", cfg.ProfileDir, "profile", cfg.ChromeProfile, "headless", cfg.Headless)
 	} else {
+		if cfg.ChromeProfile != "" {
+			log.Warn("chrome profile is only used with --launch; connecting to the running Chrome as is")
+		}
 		wsURL, err = cdp.ResolveEndpoint(ctx, cfg.Chrome)
 		if err != nil {
 			return nil, err
@@ -81,6 +97,13 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 	}
 	a.browser = chrome
 	chrome.SetLogBuffer(cfg.ConsoleBuffer)
+	chrome.SetExtraHeaders(cfg.ExtraHeaders)
+	if err := chrome.SetCookies(cctx, cfg.Cookies); err != nil {
+		return nil, fmt.Errorf("setting configured cookies: %w", err)
+	}
+	if len(cfg.Cookies) > 0 {
+		log.Info("set configured cookies", "count", len(cfg.Cookies))
+	}
 	if a.Browser, err = chrome.Version(cctx); err != nil {
 		return nil, fmt.Errorf("talking to chrome: %w", err)
 	}
@@ -109,6 +132,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 	}
 
 	px := proxy.New(a.Core, ca, log)
+	px.StripHeaders = cfg.StripHeaders
 	wd := webdriver.New(a.Core, log)
 	faces := []string{px.Name(), wd.Name()}
 	mounted := map[string]core.Face{}
@@ -132,6 +156,28 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 		mounted[remote.Prefix] = a.ui
 		uiPrefix = remote.Prefix
 	}
+	var oauthServer *oauth.Server
+	if cfg.MCP && cfg.OAuth.Enabled {
+		key, err := oauth.LoadOrCreateKey(cfg.DataDir)
+		if err != nil {
+			return nil, err
+		}
+		oauthServer, err = oauth.New(oauth.Options{
+			Key:                 key,
+			Credentials:         cfg.Credentials,
+			PublicURL:           cfg.PublicURL,
+			Resource:            mcp.Prefix,
+			AccessTTL:           cfg.OAuth.AccessTTL,
+			RefreshTTL:          cfg.OAuth.RefreshTTL,
+			DynamicRegistration: cfg.OAuth.DynamicRegistration,
+			Clients:             cfg.OAuth.Clients,
+			Logger:              log,
+		})
+		if err != nil {
+			return nil, err
+		}
+		log.Info("mcp oauth enabled", "dynamic_registration", cfg.OAuth.DynamicRegistration, "clients", len(cfg.OAuth.Clients))
+	}
 	a.server = server.New(server.Options{
 		Token:       cfg.Token,
 		Credentials: cfg.Credentials,
@@ -142,13 +188,53 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 		WebDriver:   wd,
 		Faces:       mounted,
 		UIPrefix:    uiPrefix,
+		OAuth:       oauthServer,
+		MCPPrefix:   mcp.Prefix,
 	})
 
 	if a.listener, err = frontdoor.Listen(ctx, cfg.Addr, log); err != nil {
 		return nil, err
 	}
 	a.Addr = a.listener.Addr()
+	if mode := tailnet.Mode(cfg.Tailscale.Publish); mode != tailnet.ModeNone {
+		target := "http://" + a.Addr.String()
+		if a.unpublish, err = ts.Publish(ctx, mode, cfg.Tailscale.HTTPSPort, target); err != nil {
+			return nil, err
+		}
+		log.Info("published with tailscale "+string(mode), "url", cfg.PublicURL, "target", target)
+		if mode == tailnet.ModeFunnel {
+			log.Warn("tailscale funnel puts Tether on the public internet; only your token stands between it and your browser")
+		}
+	}
 	return a, nil
+}
+
+// resolveTailnet points cfg at this machine's tailnet: its address for
+// --tailscale, and its HTTPS name as the public URL for serve/funnel.
+func resolveTailnet(ctx context.Context, cfg *config.Config, ts tailnet.CLI, log *slog.Logger) error {
+	self, err := ts.Status(ctx)
+	if err != nil && cfg.Tailscale.Publish != "" {
+		return err // serve and funnel need the CLI anyway
+	}
+	if cfg.Tailscale.Enabled {
+		ip := self.IPv4
+		if err != nil {
+			log.Debug("tailscale CLI unavailable; looking for a tailnet address on the interfaces", "err", err)
+			if ip, err = tailnet.InterfaceIPv4(); err != nil {
+				return err
+			}
+		}
+		_, port, perr := net.SplitHostPort(cfg.Addr)
+		if perr != nil {
+			return fmt.Errorf("invalid --addr %q: %w", cfg.Addr, perr)
+		}
+		cfg.Addr = net.JoinHostPort(ip.String(), port)
+		log.Info("listening on the tailnet", "addr", cfg.Addr, "name", self.DNSName)
+	}
+	if cfg.Tailscale.Publish != "" && cfg.PublicURL == "" && self.DNSName != "" {
+		cfg.PublicURL = tailnet.PublicURL(self.DNSName, cfg.Tailscale.HTTPSPort)
+	}
+	return nil
 }
 
 // Serve runs until ctx is cancelled or the browser connection drops, then
@@ -190,6 +276,14 @@ func (a *App) Serve(ctx context.Context) error {
 }
 
 func (a *App) cleanup() {
+	if a.unpublish != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := a.unpublish(ctx); err != nil {
+			a.log.Warn("removing tailscale publish failed", "err", err)
+		}
+		cancel()
+		a.unpublish = nil
+	}
 	if a.listener != nil {
 		_ = a.listener.Close()
 	}

@@ -18,8 +18,8 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           check-latest: true
@@ -27,7 +27,7 @@ jobs:
         run: go mod tidy && git diff --exit-code go.mod go.sum
       - name: go vet
         run: go vet ./... && go vet -tags integration ./...
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.5.0
 
@@ -46,8 +46,8 @@ jobs:
           - os: windows-latest
             go: stable
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
       - name: Unit + integration tests (race, coverage, real headless Chrome)
@@ -70,7 +70,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           go tool cover -func=coverage.out >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: runner.os == 'Linux' && matrix.go == 'stable'
         with:
           name: coverage
@@ -89,10 +89,10 @@ jobs:
           - { goos: linux, goarch: amd64 }
           - { goos: windows, goarch: amd64 }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - name: Build static binary
@@ -109,8 +109,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

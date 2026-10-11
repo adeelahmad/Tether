@@ -82,6 +82,11 @@ directory. Unknown keys are an error, so a typo never silently does nothing.
 | **`[remote]`** | | | |
 | `enabled` | `--no-remote` (inverted) | `true` | The remote-browser UI at `/remote/`. |
 | `quality` | `--remote-quality` | `70` | JPEG quality of its video, 1–100. |
+| **`[tailscale]`** | | | |
+| `enabled` | `--tailscale` | `false` | Listen on this machine's tailnet IPv4 address, keeping the port of `addr`. Needs a token. |
+| `publish` | `--tailscale-publish` | none | `"serve"` (HTTPS on your tailnet) or `"funnel"` (HTTPS on the public internet), forwarding to Tether. Needs a token. |
+| `https_port` | `--tailscale-https-port` | `443` | Port `publish` serves on; funnel allows 443, 8443 or 10000. |
+| `bin` | `--tailscale-bin` | `"tailscale"` | The tailscale CLI. |
 
 ## Choosing a Chrome profile
 
@@ -122,6 +127,46 @@ every origin the page loads from, so it is for markers, not credentials.
 `[[cookies]]` are written into the browser's cookie jar once, at startup,
 exactly as if the site had set them; in a connected (not launched) Chrome that
 is your real cookie jar.
+
+## Tailscale
+
+Tailscale is the recommended way to reach Tether from other machines (see
+[SECURITY.md](../SECURITY.md#recommended-exposure-tailscale)). Tether drives
+the `tailscale` CLI you already have installed and logged in; it embeds no
+Tailscale code.
+
+```toml
+[auth]
+token_env = "TETHER_TOKEN"
+
+[tailscale]
+enabled = true        # listen on 100.x.y.z:8787 instead of 127.0.0.1:8787
+```
+
+That replaces `--addr "$(tailscale ip -4):8787"`. Every device on your
+tailnet that your ACLs allow can now use the proxy, WebDriver, MCP and the
+remote UI at `http://<machine>:8787`. If the CLI isn't available (for
+example in a container on the host network), Tether looks for a tailnet
+address on the network interfaces instead.
+
+```toml
+[tailscale]
+publish = "serve"     # https://<machine>.<tailnet>.ts.net -> Tether
+```
+
+`publish` runs `tailscale serve --bg` at startup and removes it on shutdown,
+giving Tether a real HTTPS name with a valid certificate. It also sets
+`public_url` to that name unless you set one, which is what MCP OAuth
+clients need. It works with either listener: loopback or the tailnet address.
+The HTTPS name carries Tether's own endpoints (MCP, WebDriver, the API and
+the remote UI); use the plain tailnet address for the forward proxy.
+
+`publish = "funnel"` does the same with `tailscale funnel`, which puts Tether
+**on the public internet**. That is what claude.ai custom connectors need,
+since they connect from Anthropic's servers, not your tailnet. Only your
+token protects your browser then: use a long random admin token, give agents
+narrow `[[auth.tokens]]`, and turn on `[mcp.oauth]` so nobody pastes a token
+into a third-party app.
 
 ## MCP OAuth
 

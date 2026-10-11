@@ -109,3 +109,11 @@ dynamic_registration = true       # let clients register themselves
 [remote]
 enabled = true                    # the remote-browser web UI at /remote/
 quality = 70                      # JPEG quality of the video, 1-100
+
+[tailscale]
+# Uses the tailscale CLI already installed and logged in on this machine.
+# Both options below need a token in [auth].
+enabled = false                   # listen on this machine's tailnet IP (keeps the port of server.addr)
+publish = ""                      # "serve": HTTPS on your tailnet; "funnel": HTTPS on the public internet
+https_port = 443                  # funnel allows 443, 8443 or 10000
+bin = "tailscale"

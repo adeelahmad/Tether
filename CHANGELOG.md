@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page asks for a Tether token and the client acts as it; OAuth tokens open
   `/mcp` only. `--public-url` sets the issuer.
 - `--policy-file` also accepts TOML (`.toml`).
+- Tailscale exposure (`[tailscale]`, `--tailscale`, `--tailscale-publish`):
+  listen on this machine's tailnet address, and optionally publish over HTTPS
+  with `tailscale serve` (tailnet) or `tailscale funnel` (internet), removed
+  again on shutdown. Uses the installed tailscale CLI; needs a token.
 
 - Per-token and per-session domain policies (`docs/POLICIES.md`): a
   `--policy-file` defines named tokens, each with allow/deny rules, an

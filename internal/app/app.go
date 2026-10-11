@@ -25,6 +25,7 @@ import (
 	"github.com/adeelahmad/tether/internal/remote"
 	"github.com/adeelahmad/tether/internal/server"
 	"github.com/adeelahmad/tether/internal/session"
+	"github.com/adeelahmad/tether/internal/tailnet"
 	"github.com/adeelahmad/tether/internal/webdriver"
 )
 
@@ -39,12 +40,20 @@ type App struct {
 	browser  *cdp.Chrome
 	launched *cdp.Process
 	ui       *remote.UI
-	log      *slog.Logger
+	// unpublish removes the tailscale serve/funnel config Tether added.
+	unpublish func(context.Context) error
+	log       *slog.Logger
 }
 
 // Start validates exposure, connects to (or launches) Chrome, and binds the
 // listener. Call Serve to handle requests.
 func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, err error) {
+	ts := tailnet.CLI{Bin: cfg.Tailscale.Bin}
+	if cfg.Tailscale.Enabled || cfg.Tailscale.Publish != "" {
+		if err := resolveTailnet(ctx, cfg, ts, log); err != nil {
+			return nil, err
+		}
+	}
 	if err := server.CheckBind(ctx, cfg.Addr, cfg.HasAuth(), cfg.InsecureAllowPublic); err != nil {
 		return nil, err
 	}
@@ -187,7 +196,45 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 		return nil, err
 	}
 	a.Addr = a.listener.Addr()
+	if mode := tailnet.Mode(cfg.Tailscale.Publish); mode != tailnet.ModeNone {
+		target := "http://" + a.Addr.String()
+		if a.unpublish, err = ts.Publish(ctx, mode, cfg.Tailscale.HTTPSPort, target); err != nil {
+			return nil, err
+		}
+		log.Info("published with tailscale "+string(mode), "url", cfg.PublicURL, "target", target)
+		if mode == tailnet.ModeFunnel {
+			log.Warn("tailscale funnel puts Tether on the public internet; only your token stands between it and your browser")
+		}
+	}
 	return a, nil
+}
+
+// resolveTailnet points cfg at this machine's tailnet: its address for
+// --tailscale, and its HTTPS name as the public URL for serve/funnel.
+func resolveTailnet(ctx context.Context, cfg *config.Config, ts tailnet.CLI, log *slog.Logger) error {
+	self, err := ts.Status(ctx)
+	if err != nil && cfg.Tailscale.Publish != "" {
+		return err // serve and funnel need the CLI anyway
+	}
+	if cfg.Tailscale.Enabled {
+		ip := self.IPv4
+		if err != nil {
+			log.Debug("tailscale CLI unavailable; looking for a tailnet address on the interfaces", "err", err)
+			if ip, err = tailnet.InterfaceIPv4(); err != nil {
+				return err
+			}
+		}
+		_, port, perr := net.SplitHostPort(cfg.Addr)
+		if perr != nil {
+			return fmt.Errorf("invalid --addr %q: %w", cfg.Addr, perr)
+		}
+		cfg.Addr = net.JoinHostPort(ip.String(), port)
+		log.Info("listening on the tailnet", "addr", cfg.Addr, "name", self.DNSName)
+	}
+	if cfg.Tailscale.Publish != "" && cfg.PublicURL == "" && self.DNSName != "" {
+		cfg.PublicURL = tailnet.PublicURL(self.DNSName, cfg.Tailscale.HTTPSPort)
+	}
+	return nil
 }
 
 // Serve runs until ctx is cancelled or the browser connection drops, then
@@ -229,6 +276,14 @@ func (a *App) Serve(ctx context.Context) error {
 }
 
 func (a *App) cleanup() {
+	if a.unpublish != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := a.unpublish(ctx); err != nil {
+			a.log.Warn("removing tailscale publish failed", "err", err)
+		}
+		cancel()
+		a.unpublish = nil
+	}
 	if a.listener != nil {
 		_ = a.listener.Close()
 	}

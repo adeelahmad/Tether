@@ -47,8 +47,13 @@ Then, from any machine on your tailnet:
 curl -x "http://tether:$TETHER_TOKEN@my-laptop:8787" --cacert tether-ca.pem https://github.com/
 ```
 
+Or, in the [config file](docs/CONFIG.md#tailscale), `[tailscale] enabled =
+true` does the same, and `publish = "serve"` adds an HTTPS name on your
+tailnet via `tailscale serve`.
+
 Use Tailscale ACLs to limit which devices can reach port 8787. Avoid
-`tailscale funnel` (that is public internet exposure).
+`tailscale funnel` (`publish = "funnel"`) unless you need it: that is public
+internet exposure, and Tether refuses either publish mode without a token.
 
 ## Threat model
 

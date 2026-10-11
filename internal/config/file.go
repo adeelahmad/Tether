@@ -77,6 +77,12 @@ type fileConfig struct {
 		Enabled *bool `toml:"enabled"`
 		Quality *int  `toml:"quality"`
 	} `toml:"remote"`
+	Tailscale struct {
+		Enabled   *bool   `toml:"enabled"`
+		Publish   *string `toml:"publish"`
+		HTTPSPort *int    `toml:"https_port"`
+		Bin       *string `toml:"bin"`
+	} `toml:"tailscale"`
 }
 
 type cookieSpec struct {
@@ -326,6 +332,12 @@ func (f *fileConfig) resolve(dir string, env Env) (*loadedFile, error) {
 	setBool("mcp-oauth", f.MCP.OAuth.Enabled, false)
 	setBool("no-remote", f.Remote.Enabled, true)
 	setInt("remote-quality", f.Remote.Quality)
+
+	ts := f.Tailscale
+	setBool("tailscale", ts.Enabled, false)
+	setStr("tailscale-publish", ts.Publish)
+	setInt("tailscale-https-port", ts.HTTPSPort)
+	setStr("tailscale-bin", ts.Bin)
 	return l, nil
 }
 

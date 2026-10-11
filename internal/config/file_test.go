@@ -105,6 +105,12 @@ redirect_uris = ["http://127.0.0.1/callback"]
 [remote]
 enabled = false
 quality = 40
+
+[tailscale]
+enabled = true
+publish = "serve"
+https_port = 8443
+bin = "/usr/local/bin/tailscale"
 `
 
 func TestConfigFile(t *testing.T) {
@@ -143,6 +149,9 @@ func TestConfigFile(t *testing.T) {
 	}
 	if c.ConsoleBuffer != 50 || !c.MCP || !c.NoRemote || c.RemoteQuality != 40 {
 		t.Fatalf("faces: %+v", c)
+	}
+	if !c.Tailscale.Enabled || c.Tailscale.Publish != "serve" || c.Tailscale.HTTPSPort != 8443 || c.Tailscale.Bin != "/usr/local/bin/tailscale" {
+		t.Fatalf("tailscale: %+v", c.Tailscale)
 	}
 	if !c.OAuth.Enabled || c.OAuth.DynamicRegistration || c.OAuth.AccessTTL != 10*time.Minute ||
 		len(c.OAuth.Clients) != 1 || c.OAuth.Clients[0].ID != "my-agent" {
@@ -243,6 +252,9 @@ func TestConfigFileErrors(t *testing.T) {
 		{"oauth bad ttl", "[auth]\ntoken = \"a-long-enough-token\"\n[mcp.oauth]\nenabled = true\naccess_token_ttl = \"-1m\"\n", "positive duration", nil},
 		{"short client secret", "[auth]\ntoken = \"a-long-enough-token\"\n[[mcp.oauth.clients]]\nid = \"x\"\nsecret = \"short\"\nredirect_uris = [\"https://x.test/cb\"]\n", "at least 16", nil},
 		{"bad public url", "[server]\npublic_url = \"https://x.test/path\"\n", "--public-url", nil},
+		{"publish without token", "[tailscale]\npublish = \"funnel\"\n", "needs a token", nil},
+		{"bad publish mode", "[tailscale]\npublish = \"tunnel\"\n", "serve or funnel", nil},
+		{"funnel port", "[auth]\ntoken = \"a-long-enough-token\"\n[tailscale]\npublish = \"funnel\"\nhttps_port = 444\n", "443, 8443 or 10000", nil},
 		{"bad deny pattern", "[policy]\ndeny = [\"http://x\"]\n", "invalid domain pattern", nil},
 	}
 	for _, tt := range tests {
@@ -263,7 +275,7 @@ func TestExampleConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Addr != DefaultAddr || c.ConsoleBuffer != 1000 || !c.MCP {
+	if c.Addr != DefaultAddr || c.ConsoleBuffer != 1000 || !c.MCP || c.Tailscale.Enabled || c.Tailscale.Publish != "" {
 		t.Fatalf("%+v", c)
 	}
 }

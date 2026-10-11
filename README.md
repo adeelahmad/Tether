@@ -194,6 +194,10 @@ curl -x "http://tether:$TETHER_TOKEN@my-laptop:8787" --cacert tether-ca.pem http
 # or watch and drive it from your phone: http://my-laptop:8787/remote/
 ```
 
+`tether serve --launch --tailscale` (or `[tailscale] enabled = true` in the
+config file) picks the tailnet address for you, and `--tailscale-publish serve`
+adds an HTTPS name via `tailscale serve`; see [docs/CONFIG.md](docs/CONFIG.md#tailscale).
+
 Tether refuses to listen beyond loopback without a token. Read
 [SECURITY.md](SECURITY.md) before exposing it anywhere.
 
@@ -242,6 +246,8 @@ Chrome profile to launch and MCP OAuth. Start from
 | `--mcp` | `true` | Serve the MCP face at `/mcp` |
 | `--mcp-oauth` | `false` | Let MCP clients sign in with OAuth — see [docs/CONFIG.md](docs/CONFIG.md#mcp-oauth) |
 | `--public-url` | from request | Externally visible origin (OAuth issuer) |
+| `--tailscale` | `false` | Listen on this machine's tailnet address (keeps the `--addr` port) |
+| `--tailscale-publish` | — | `serve` or `funnel`: also publish over HTTPS via the tailscale CLI |
 | `--no-remote` | `false` | Don't serve the remote-browser UI at `/remote/` |
 | `--remote-quality` | `70` | JPEG quality of the remote UI video (1–100) |
 | `--log-level`, `--log-format` | `info`, `text` | `json` for machines; secrets are always redacted |

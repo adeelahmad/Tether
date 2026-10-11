@@ -63,6 +63,8 @@ type Config struct {
 	// Cookies are stored in the browser's cookie jar at startup.
 	Cookies []cdp.Cookie
 
+	Tailscale TailscaleConfig
+
 	// ConfigFile is the config file that was read, if any.
 	ConfigFile string
 
@@ -79,6 +81,18 @@ type Config struct {
 	Credentials []policy.Credential
 
 	fileTokens []policy.Credential
+}
+
+// TailscaleConfig exposes Tether on a tailnet through the tailscale CLI.
+type TailscaleConfig struct {
+	// Enabled listens on this machine's tailnet IPv4 address instead of
+	// the host in Addr (the port is kept).
+	Enabled bool
+	// Publish is "", "serve" (HTTPS on the tailnet) or "funnel" (HTTPS on
+	// the public internet), forwarding to Tether's listener.
+	Publish   string
+	HTTPSPort int
+	Bin       string
 }
 
 // Env looks up an environment variable.
@@ -169,6 +183,10 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 	boolean(&c.MCP, "mcp", "TETHER_MCP", true, "serve the MCP face for AI agents at /mcp")
 	boolean(&c.OAuth.Enabled, "mcp-oauth", "TETHER_MCP_OAUTH", false, "let MCP clients sign in with OAuth (needs a token; see docs/CONFIG.md)")
 	str(&c.PublicURL, "public-url", "TETHER_PUBLIC_URL", "", "externally visible base URL, e.g. https://tether.example.ts.net (default: from each request)")
+	boolean(&c.Tailscale.Enabled, "tailscale", "TETHER_TAILSCALE", false, "listen on this machine's Tailscale address (keeps the --addr port; needs a token)")
+	str(&c.Tailscale.Publish, "tailscale-publish", "TETHER_TAILSCALE_PUBLISH", "", "also publish over HTTPS: serve (tailnet only) or funnel (public internet); needs a token")
+	integer(&c.Tailscale.HTTPSPort, "tailscale-https-port", "TETHER_TAILSCALE_HTTPS_PORT", 443, "HTTPS port for --tailscale-publish (funnel: 443, 8443 or 10000)")
+	str(&c.Tailscale.Bin, "tailscale-bin", "TETHER_TAILSCALE_BIN", "tailscale", "the tailscale CLI")
 	str(&c.LogLevel, "log-level", "TETHER_LOG_LEVEL", "info", "debug, info, warn or error")
 	str(&c.LogFormat, "log-format", "TETHER_LOG_FORMAT", "text", "text or json")
 
@@ -209,6 +227,9 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 	}
 	if err := c.resolvePolicy(env); err != nil {
 		return nil, err
+	}
+	if c.Tailscale.Publish != "" && len(c.Credentials) == 0 {
+		return nil, fmt.Errorf("--tailscale-publish %s needs a token: set --token or [auth] in the config file", c.Tailscale.Publish)
 	}
 	if c.OAuth.Enabled && len(c.Credentials) == 0 {
 		return nil, errors.New("MCP OAuth needs at least one token to approve sign-ins with: set --token or [auth] in the config file")
@@ -276,6 +297,17 @@ func (c *Config) Validate() error {
 	}
 	if c.Token != "" && len(c.Token) < 16 {
 		return errors.New("--token must be at least 16 characters")
+	}
+	switch c.Tailscale.Publish {
+	case "", "serve", "funnel":
+	default:
+		return errors.New("--tailscale-publish must be serve or funnel")
+	}
+	if c.Tailscale.HTTPSPort < 1 || c.Tailscale.HTTPSPort > 65535 {
+		return errors.New("--tailscale-https-port must be a port number")
+	}
+	if c.Tailscale.Publish == "funnel" && c.Tailscale.HTTPSPort != 443 && c.Tailscale.HTTPSPort != 8443 && c.Tailscale.HTTPSPort != 10000 {
+		return errors.New("tailscale funnel only serves on HTTPS port 443, 8443 or 10000")
 	}
 	if c.PublicURL != "" {
 		u, err := url.Parse(c.PublicURL)

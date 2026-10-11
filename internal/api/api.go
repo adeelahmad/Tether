@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/adeelahmad/tether/internal/cdp"
@@ -43,6 +44,7 @@ func New(c *core.Core, caPEM []byte, faces []string) *API {
 	a.mux.HandleFunc("GET /tether/v1/tabs/{id}/policy", a.getPolicy)
 	a.mux.HandleFunc("PUT /tether/v1/tabs/{id}/policy", a.putPolicy)
 	a.mux.HandleFunc("GET /tether/v1/whoami", a.whoami)
+	a.mux.HandleFunc("GET /tether/v1/tabs/{id}/logs", a.logs)
 	a.mux.HandleFunc("/tether/v1/", func(w http.ResponseWriter, _ *http.Request) {
 		httpx.WriteError(w, http.StatusNotFound, "not_found", "no such endpoint")
 	})
@@ -270,6 +272,33 @@ func (a *API) whoami(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"authenticated": true, "name": p.Name, "admin": p.Admin, "scripts": p.Scripts, "rules": p.Rules,
 	})
+}
+
+// logs returns the tab's buffered console and browser log entries. Poll
+// with ?after=<next from the previous response> to read only new ones.
+func (a *API) logs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	var after uint64
+	if v := q.Get("after"); v != "" {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			a.fail(w, errors.Join(core.ErrBadRequest, errors.New("after must be a non-negative integer")))
+			return
+		}
+		after = n
+	}
+	level, err := core.ParseLevel(q.Get("level"))
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	s, err := a.core.Sessions.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		a.fail(w, err)
+		return
+	}
+	entries, next := a.core.Logs(s, after, level)
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"entries": entries, "next": next})
 }
 
 func (a *API) fail(w http.ResponseWriter, err error) {

@@ -91,6 +91,16 @@ shutdown. If the user closes a tab in Chrome, the `Target.targetDestroyed`
 event ends the session immediately. Adopted tabs are released, never closed
 (unless explicitly forced).
 
+Console capture: when a tab is attached, `cdp` enables the `Runtime` and
+`Log` domains and keeps a ring buffer (`--console-buffer`, default 1000) of
+`Runtime.consoleAPICalled`, `Runtime.exceptionThrown` and `Log.entryAdded`
+events. Every entry carries a per-tab sequence number, so any face can read
+"what's new since N" without its own copy: `Core.Logs(session, after,
+minLevel)` returns the entries plus the next cursor, and does not take the
+tab lock, so logs can be read while a request is running. The control API
+(`GET /tether/v1/tabs/{id}/logs`) and WebDriver's `get_log("browser")` are
+thin views over it; the MCP face will be another.
+
 Concurrency: each session has a one-slot semaphore; requests to one tab run
 one at a time (a tab can only be on one page), different tabs run in
 parallel. First-contact creation is de-duplicated per domain, so a burst of

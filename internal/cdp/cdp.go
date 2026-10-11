@@ -85,6 +85,11 @@ type Tab interface {
 	// Guard again replaces check; a nil check removes the guard. check runs
 	// on the event loop and must not block.
 	Guard(ctx context.Context, check func(url string) error) error
+
+	// Logs returns the buffered console messages, uncaught exceptions and
+	// browser log entries with Seq > after, oldest first. Capture starts
+	// when Tether attaches; the buffer keeps the most recent entries only.
+	Logs(after uint64) []LogEntry
 }
 
 // TabInfo describes a page target.

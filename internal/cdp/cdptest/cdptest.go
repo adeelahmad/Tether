@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/adeelahmad/tether/internal/cdp"
 )
@@ -143,6 +144,8 @@ type Tab struct {
 
 	Navigations []string
 	Calls       []Call
+	logs        []cdp.LogEntry
+	logSeq      uint64
 	CallResult  json.RawMessage
 	EvalResult  json.RawMessage
 
@@ -266,4 +269,27 @@ func (t *Tab) SetURL(url string) {
 	t.mu.Lock()
 	t.url = url
 	t.mu.Unlock()
+}
+
+// Log appends a log entry, as if the page had printed it, and returns its
+// sequence number.
+func (t *Tab) Log(level, text string) uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.logSeq++
+	e := cdp.LogEntry{Seq: t.logSeq, Time: time.Now(), Source: "console", Level: level, Text: text}
+	t.logs = append(t.logs, e)
+	return e.Seq
+}
+
+func (t *Tab) Logs(after uint64) []cdp.LogEntry {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []cdp.LogEntry
+	for _, e := range t.logs {
+		if e.Seq > after {
+			out = append(out, e)
+		}
+	}
+	return out
 }

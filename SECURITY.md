@@ -71,7 +71,9 @@ a sandbox against a determined attacker who also shares the browser profile
 | One agent reads or steers another agent's tab | Per-token ownership: non-admin tokens only resolve their own tabs, including via cookie, header and WebDriver session ID | Admin tokens see everything by design. |
 | Tether used to read a page the user has open | Only tabs Tether opened, or tabs explicitly addressed by ID, are driven; adopting requires an admin token | Any admin token can address any tab by ID. |
 | Chrome DevTools port exposed | `--launch` binds it to loopback; Tether never re-exposes it | If you start Chrome yourself with `--remote-debugging-address=0.0.0.0`, that is outside Tether's control. |
-| Denial of service (huge bodies, many tabs) | 32 MiB request body cap; per-tab serialisation; idle reaping | A token holder can open many tabs. |
+| Secrets printed to the console by a page (tokens, PII in debug logs) | Console capture is only readable through the authenticated listener and is never written to Tether's own logs | Any token holder can read the captured console of any tab. `--console-buffer 0` turns capture off. |
+| Sites detecting automation via `Runtime.enable` | — | Console capture enables the `Runtime` domain, which some anti-bot scripts can detect. `--console-buffer 0` leaves it off. |
+| Denial of service (huge bodies, many tabs) | 32 MiB request body cap; per-tab serialisation; idle reaping; console buffer capped per tab and per entry (8 KiB) | A token holder can open many tabs. |
 
 **Out of scope.** Protecting the user from sites they are logged in to, from
 other software running as the same OS user, or from someone with physical

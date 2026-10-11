@@ -90,6 +90,17 @@ func TestParse(t *testing.T) {
 			map[string]string{"AGENT": "agent-token-0123456789"}, nil, true},
 		{"policy file missing env", []string{"--policy-file", policyFile}, nil, nil, true},
 		{"bad deny pattern", []string{"--deny-domains", "http://x"}, nil, nil, true},
+		{"console buffer", []string{"--console-buffer", "0"}, map[string]string{"TETHER_CONSOLE_BUFFER": "50"}, func(t *testing.T, c *Config) {
+			if c.ConsoleBuffer != 0 {
+				t.Fatal(c.ConsoleBuffer)
+			}
+		}, false},
+		{"console buffer default", nil, nil, func(t *testing.T, c *Config) {
+			if c.ConsoleBuffer != 1000 {
+				t.Fatal(c.ConsoleBuffer)
+			}
+		}, false},
+		{"negative console buffer", []string{"--console-buffer", "-1"}, nil, nil, true},
 		{"short token", []string{"--token", "short"}, nil, nil, true},
 		{"bad timeout", []string{"--timeout", "0s"}, nil, nil, true},
 		{"stray args", []string{"extra"}, nil, nil, true},

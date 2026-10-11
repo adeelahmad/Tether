@@ -64,7 +64,10 @@ func uiGate(a *authenticator, prefix string, w http.ResponseWriter, r *http.Requ
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: UICookieName, Value: "", Path: prefix, MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+		http.SetCookie(w, &http.Cookie{
+			Name: UICookieName, Value: "", Path: prefix, MaxAge: -1,
+			HttpOnly: true, Secure: isHTTPS(r), SameSite: http.SameSiteStrictMode,
+		})
 		http.Redirect(w, r, prefix+"/login", http.StatusSeeOther)
 		return
 	}
@@ -108,7 +111,7 @@ func (a *authenticator) login(prefix string, w http.ResponseWriter, r *http.Requ
 			Path:     prefix,
 			MaxAge:   int((30 * 24 * time.Hour).Seconds()),
 			HttpOnly: true,
-			Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
+			Secure:   isHTTPS(r),
 			SameSite: http.SameSiteStrictMode,
 		})
 		http.Redirect(w, r, prefix+"/", http.StatusSeeOther)
@@ -116,6 +119,14 @@ func (a *authenticator) login(prefix string, w http.ResponseWriter, r *http.Requ
 		w.Header().Set("Allow", "GET, POST")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// isHTTPS reports whether the browser reached us over HTTPS, directly or
+// through a TLS-terminating proxy such as `tailscale serve`. Cookies are
+// only marked Secure then: Tether usually serves plain HTTP on loopback or
+// a tailnet, where browsers refuse to store Secure cookies at all.
+func isHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 // sameOrigin reports whether a form post came from a page on this server

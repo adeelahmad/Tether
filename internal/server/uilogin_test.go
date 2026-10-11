@@ -168,3 +168,23 @@ func TestUIWithoutToken(t *testing.T) {
 		}
 	}
 }
+
+func TestUICookieSecureOverHTTPS(t *testing.T) {
+	uiLoginDelay = 0
+	const token = "s3cret-token-0123456789"
+	h := newUIServer(token, false)
+	w := login(t, h, token, map[string]string{"X-Forwarded-Proto": "https"})
+	if c := w.Result().Cookies(); len(c) != 1 || !c[0].Secure {
+		t.Fatalf("login over https: %+v", c)
+	}
+	r := httptest.NewRequest("POST", "/remote/logout", nil)
+	r.Header.Set("X-Forwarded-Proto", "https")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if c := w.Result().Cookies(); len(c) != 1 || !c[0].Secure || c[0].MaxAge >= 0 {
+		t.Fatalf("logout over https: %+v", c)
+	}
+	if c := login(t, h, token, nil).Result().Cookies(); len(c) != 1 || c[0].Secure {
+		t.Fatalf("login over plain http must not be Secure: %+v", c)
+	}
+}

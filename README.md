@@ -162,8 +162,15 @@ curl -s http://127.0.0.1:8787/tether/v1/tabs                           # list se
 curl -s -X POST http://127.0.0.1:8787/tether/v1/tabs -d '{"url":"https://example.com"}'
 curl -s -X POST http://127.0.0.1:8787/tether/v1/tabs/$TAB/eval \
      -d '{"expression":"document.title"}'                               # Runtime.evaluate
+curl -s "http://127.0.0.1:8787/tether/v1/tabs/$TAB/logs?level=warning" # console + browser logs
 curl -s -X DELETE http://127.0.0.1:8787/tether/v1/tabs/$TAB            # close
 ```
+
+Every tab Tether drives keeps its recent `console.*` output, uncaught
+exceptions and browser log entries (failed requests, security warnings).
+`GET …/logs` returns `{"entries": [...], "next": N}`; pass `?after=N` to read
+only what is new, and `?level=debug|info|warning|error` to filter. The same
+buffer backs WebDriver's `driver.get_log("browser")`.
 
 ### From another machine (Tailscale)
 
@@ -176,6 +183,20 @@ curl -x "http://tether:$TETHER_TOKEN@my-laptop:8787" --cacert tether-ca.pem http
 
 Tether refuses to listen beyond loopback without a token. Read
 [SECURITY.md](SECURITY.md) before exposing it anywhere.
+
+### One token per agent
+
+Give every agent its own token with its own domain rules. Each token only
+sees the tabs it opened, and the rules are enforced inside the browser, so
+redirects, link clicks and page script can't wander off the allowlist either.
+
+```sh
+tether serve --policy-file examples/policy.json   # tokens + rules, see docs/POLICIES.md
+curl -s -H "Authorization: Bearer $TETHER_RESEARCH_TOKEN" http://127.0.0.1:8787/tether/v1/whoami
+# lock a single tab tighter still
+curl -s -H "Authorization: Bearer $TETHER_RESEARCH_TOKEN" -X POST http://127.0.0.1:8787/tether/v1/tabs \
+  -d '{"url":"https://en.wikipedia.org/","policy":{"allow":["en.wikipedia.org"]}}'
+```
 
 ## Configuration
 
@@ -191,7 +212,10 @@ Every flag has a `TETHER_*` environment variable; flags win.
 | `--chrome-bin`, `--chrome-args`, `--profile-dir` | auto | With `--launch` |
 | `--idle-timeout` | `15m` | Close tabs Tether opened after inactivity (`0` = never) |
 | `--timeout` | `60s` | Default per-request timeout |
+| `--console-buffer` | `1000` | Console/log entries kept per tab (`0` = no capture) |
 | `--allow-domains` | all | Comma-separated navigation allowlist (applies to every face) |
+| `--deny-domains` | none | Comma-separated denylist; deny beats allow |
+| `--policy-file` | — | JSON file with per-token rules and tokens — see [docs/POLICIES.md](docs/POLICIES.md) |
 | `--data-dir` | user config dir | Local CA and launched profile |
 | `--no-mitm` | `false` | Refuse HTTPS `CONNECT` instead of intercepting |
 | `--mcp` | `true` | Serve the MCP face at `/mcp` |
@@ -213,7 +237,7 @@ local CA, and it only drives Chromium-family browsers.
 | Uses your real logged-in profile | ✅ | ✅ | ❌ (re-login, stored creds) | ❌ |
 | Needs a browser extension | **No** | Yes | No | No |
 | Plain HTTP proxy (curl, any language) | ✅ | ❌ | Rarely | ❌ |
-| W3C WebDriver / Selenium | ✅ common set | ❌ | Often | ✅ |
+| W3C WebDriver / Selenium | ✅ incl. frames, alerts, windows, uploads, PDF | ❌ | Often | ✅ |
 | MCP for agents | ✅ | Often | Often | Via wrappers |
 | Runs entirely on your machine | ✅ | ✅ | ❌ | ✅ |
 | Remote access | Tailscale + token | Usually local only | ✅ | DIY |
@@ -223,10 +247,12 @@ local CA, and it only drives Chromium-family browsers.
 ## Status & roadmap
 
 - [x] Tab-session core, HTTP/HTTPS proxy, WebDriver common set, control API
+- [x] WebDriver Actions: hover, drag and drop, key chords, wheel, multi-touch
 - [x] Safe-by-default exposure, token auth, domain allowlist seam
 - [x] MCP server face: 16 browser tools over the same core, plus a stdio bridge
 - [ ] Remote-browser UI with live screencast and input — stubbed at `/remote`
-- [ ] Per-session / per-agent policies; console log capture; WebDriver Actions
+- [x] Per-token and per-session domain policies, enforced in the browser ([docs/POLICIES.md](docs/POLICIES.md))
+- [x] Per-tab console and browser log capture (control API + WebDriver `get_log`)
 
 ## Contributing
 

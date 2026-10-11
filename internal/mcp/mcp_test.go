@@ -337,9 +337,11 @@ func TestNavigateHonoursPolicy(t *testing.T) {
 	mustFail(t, e.call(sid, "browser_navigate", map[string]string{"url": "https://example.com/", "bogus": "x"}), codeInvalidArgs)
 	mustFail(t, e.call(sid, "browser_fetch", map[string]string{"url": "https://evil.test/api"}), core.CodeForbidden)
 
-	// A page that drifted off the allowlist (say, via a link) cannot be read.
+	// A page that drifted off the allowlist cannot be read. (The browser-side
+	// guard refuses navigations; SetURL stands in for anything that slips
+	// past it, such as a subframe-driven or history-API URL change.)
 	tab, _ := e.c.Sessions.Get(context.Background(), e.srv.sessions[sid].currentTab())
-	_, _ = tab.Tab.Navigate(context.Background(), "https://evil.test/", cdp.WaitLoad)
+	tab.Tab.(*cdptest.Tab).SetURL("https://evil.test/")
 	mustFail(t, e.call(sid, "browser_snapshot", map[string]any{}), core.CodeForbidden)
 	mustFail(t, e.call(sid, "browser_eval", map[string]string{"expression": "document.cookie"}), core.CodeForbidden)
 }

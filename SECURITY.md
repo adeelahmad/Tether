@@ -18,9 +18,10 @@ within 72 hours and to ship a fix or mitigation for confirmed issues within
 |---|---|
 | Binds to `127.0.0.1:8787` | Nothing off-machine can reach it unless you say so. |
 | Refuses a non-loopback `--addr` without `--token` | Exposing a logged-in browser unauthenticated must be an explicit, loud choice (`--insecure-allow-public`). |
-| Token auth on every request when `--token` is set | Constant-time comparison; `Proxy-Authorization` for proxy traffic (stripped before forwarding), `Authorization` for the API/WebDriver. |
+| Token auth on every request when `--token` or a policy file's tokens are set | Constant-time comparison against every token; `Proxy-Authorization` for proxy traffic (stripped before forwarding), `Authorization` for the API/WebDriver. |
+| Per-token tab ownership | Non-admin tokens only see tabs they opened, get their own per-site default tabs, and cannot adopt the user's tabs. Another token's tab looks like a closed one. |
 | Loopback guard when running without a token | Tether's own endpoints only answer a loopback `Host` with no cross-site `Origin`, so web pages in your browser cannot drive Tether via `fetch('http://127.0.0.1:8787')` or DNS rebinding. |
-| Per-session `core.Policy` in the request path | `--allow-domains` restricts navigation for every face; it is the hook for future per-agent permissions. |
+| Layered domain policy in the request path *and* in the browser | Global (`--allow-domains`/`--deny-domains`), per-token and per-tab rules ([docs/POLICIES.md](docs/POLICIES.md)). Restricted tabs get a DevTools `Fetch` guard, so redirects, link clicks and page script are held to the rules too. |
 | Redacted logs | Attributes named like tokens, cookies, authorization or passwords are replaced with `[REDACTED]`; URLs are logged without query strings or userinfo. |
 | Session cookie never forwarded | `tether_tab` is stripped before any request reaches the page or the site. Site `Set-Cookie` headers are not relayed to clients; the browser keeps its cookies. |
 | Background tabs; adopted tabs never closed | Tether doesn't steal focus, and only closes tabs it opened. |
@@ -53,8 +54,11 @@ ability to act as the user on any site, and Tether's local CA private key
 (`<data-dir>/ca-key.pem`), which can mint certificates for any host *that a
 client trusts this CA for*.
 
-**Trust boundary.** Whoever can authenticate to the Tether listener is fully
-trusted to use the browser. Tether is not a multi-tenant isolation layer.
+**Trust boundary.** An admin token (including `--token`) is fully trusted to
+use the browser. A non-admin token from a policy file is trusted only within
+its domain rules and its own tabs; it is a guard rail for agents you run, not
+a sandbox against a determined attacker who also shares the browser profile
+(see *Limits* in [docs/POLICIES.md](docs/POLICIES.md)).
 
 | Threat | Mitigation | Residual risk |
 |---|---|---|
@@ -63,11 +67,16 @@ trusted to use the browser. Tether is not a multi-tenant isolation layer.
 | Token leaks via logs | Redacting log handler; secrets never logged | Tokens passed on the command line are visible in `ps`; prefer `TETHER_TOKEN` or `--token-file`. |
 | Token leaks via `curl -x http://user:token@…` history | — | Shell history; prefer `--proxy-header "Proxy-Authorization: Bearer $TETHER_TOKEN"`. |
 | Local CA key theft | Key written `0600` in the per-user config dir | Anyone with your user account already has your browser. Only trust the CA in clients that use Tether; don't add it to your OS trust store unless you understand the implication. |
-| An agent/script navigates somewhere it shouldn't | `--allow-domains` policy enforced for every face; MCP tools also check the page's current URL before reading or acting on it | Allowlist is per-instance today; per-session/agent policies are the planned extension. |
+| An agent/script navigates somewhere it shouldn't | Global, per-token and per-tab rules, checked in the core and enforced in the browser for top-level navigations (including redirects, clicks and script); MCP tools also check the page's current URL before reading or acting on it | Subresources and `fetch()` from page script are not restricted; give agents `"scripts": false`. |
+| One agent reads or steers another agent's tab | Per-token ownership: non-admin tokens only resolve their own tabs, including via cookie, header and WebDriver session ID | Admin tokens see everything by design. |
+| Tether used to read a page the user has open | Only tabs Tether opened, or tabs explicitly addressed by ID, are driven; adopting requires an admin token | Any admin token can address any tab by ID. |
 | Prompt injection: a web page steers an AI agent connected over MCP | Server instructions tell the model page content is untrusted; tool annotations mark destructive tools; `--allow-domains` bounds where it can go; password values and `Set-Cookie` are never returned | An agent with access to your browser can be talked into acting as you. Use an allowlist and a client that confirms destructive tool calls. See [docs/MCP.md](docs/MCP.md#security). |
-| Tether used to read a page the user has open | Only tabs Tether opened, or tabs explicitly addressed by ID, are driven | Any authenticated client can address any tab by ID. |
 | Chrome DevTools port exposed | `--launch` binds it to loopback; Tether never re-exposes it | If you start Chrome yourself with `--remote-debugging-address=0.0.0.0`, that is outside Tether's control. |
-| Denial of service (huge bodies, many tabs) | 32 MiB request body cap; per-tab serialisation; idle reaping | A token holder can open many tabs. |
+| A client attaches local files to a page (WebDriver file inputs) | Clients are fully trusted (see above); remote uploads land in a per-session temp dir deleted when the session ends | A token holder can make a page upload any file the Tether user can read. |
+| Automation rearranges the person's screen | Window resize/maximise/minimise/fullscreen only act on windows holding nothing but Tether tabs | — |
+| Secrets printed to the console by a page (tokens, PII in debug logs) | Console capture is only readable through the authenticated listener and is never written to Tether's own logs | Any token holder can read the captured console of any tab. `--console-buffer 0` turns capture off. |
+| Sites detecting automation via `Runtime.enable` | — | Console capture enables the `Runtime` domain, which some anti-bot scripts can detect. `--console-buffer 0` leaves it off. |
+| Denial of service (huge bodies, many tabs) | 32 MiB request body cap; per-tab serialisation; idle reaping; console buffer capped per tab and per entry (8 KiB) | A token holder can open many tabs. |
 
 **Out of scope.** Protecting the user from sites they are logged in to, from
 other software running as the same OS user, or from someone with physical

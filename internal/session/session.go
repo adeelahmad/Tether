@@ -18,12 +18,19 @@ import (
 
 	"github.com/adeelahmad/tether/internal/cdp"
 	"github.com/adeelahmad/tether/internal/logx"
+	"github.com/adeelahmad/tether/internal/policy"
 )
 
 // ErrTabGone is returned when a client references a tab that is closed,
 // expired, or was never known. Faces map it to a well-defined error
 // (HTTP 410 / WebDriver "invalid session id").
 var ErrTabGone = errors.New("tab is closed or unknown")
+
+// errNotVisible is what a token gets for a tab it may not use. It is
+// ErrTabGone on purpose: a token learns nothing about other tokens' tabs.
+func errNotVisible(id string) error {
+	return fmt.Errorf("%w: %s (or not visible to this token)", ErrTabGone, id)
+}
 
 // Source says how a request was bound to its session.
 type Source string
@@ -52,7 +59,13 @@ type Session struct {
 	Owned   bool   // opened by Tether (closed on idle/shutdown) vs adopted
 	Tab     cdp.Tab
 	Created time.Time
+	// Owner is the principal that opened the tab ("" when authentication
+	// is off, or for adopted tabs). Only it and admins can use the tab.
+	Owner string
 
+	owner    *policy.Principal
+	bindKey  string // byDomain key, when bound to a domain
+	rules    atomic.Pointer[policy.Rules]
 	sem      chan struct{}
 	lastUsed atomic.Int64
 	closed   atomic.Bool
@@ -84,18 +97,47 @@ func (s *Session) LastUsed() time.Time { return time.Unix(0, s.lastUsed.Load()) 
 // Closed reports whether the session has ended.
 func (s *Session) Closed() bool { return s.closed.Load() }
 
+// OwnerPrincipal is the principal that opened the tab, or nil.
+func (s *Session) OwnerPrincipal() *policy.Principal { return s.owner }
+
+// Rules are the tab's own session rules (empty if none were set).
+func (s *Session) Rules() policy.Rules {
+	if r := s.rules.Load(); r != nil {
+		return *r
+	}
+	return policy.Rules{}
+}
+
+// SetRules replaces the tab's session rules. They only ever narrow what
+// the global and token rules allow. The rules must be normalized.
+func (s *Session) SetRules(r policy.Rules) {
+	if r.Empty() {
+		s.rules.Store(nil)
+		return
+	}
+	s.rules.Store(&r)
+}
+
 // Info is a serialisable view of a session.
 type Info struct {
-	ID       string    `json:"id"`
-	Domain   string    `json:"domain,omitempty"`
-	Owned    bool      `json:"owned"`
-	Created  time.Time `json:"created"`
-	LastUsed time.Time `json:"lastUsed"`
+	ID       string        `json:"id"`
+	Domain   string        `json:"domain,omitempty"`
+	Owned    bool          `json:"owned"`
+	Owner    string        `json:"owner,omitempty"`
+	Rules    *policy.Rules `json:"policy,omitempty"`
+	Created  time.Time     `json:"created"`
+	LastUsed time.Time     `json:"lastUsed"`
 }
 
 // Info returns a snapshot of the session.
 func (s *Session) Info() Info {
-	return Info{ID: s.ID, Domain: s.Domain, Owned: s.Owned, Created: s.Created, LastUsed: s.LastUsed()}
+	return Info{ID: s.ID, Domain: s.Domain, Owned: s.Owned, Owner: s.Owner, Rules: s.rules.Load(),
+		Created: s.Created, LastUsed: s.LastUsed()}
+}
+
+// Visible reports whether the principal in ctx may use s.
+func Visible(ctx context.Context, s *Session) bool {
+	return policy.FromContext(ctx).CanUse(s.Owner)
 }
 
 // Hints are what a request carries to identify its session, in precedence
@@ -163,6 +205,9 @@ func (m *Manager) OnClose(fn func(*Session, CloseReason)) {
 // registrable domain, creating one on first contact. A tab ID or cookie
 // that names a dead tab yields ErrTabGone rather than silently falling
 // through, so clients learn their handle is stale.
+//
+// Default domain tabs are per principal: two tokens browsing the same site
+// get separate tabs, so neither can see or steer the other's.
 func (m *Manager) Resolve(ctx context.Context, h Hints) (*Session, Source, error) {
 	if h.TabID != "" {
 		s, err := m.Get(ctx, h.TabID)
@@ -177,15 +222,17 @@ func (m *Manager) Resolve(ctx context.Context, h Hints) (*Session, Source, error
 		return nil, "", errors.New("session: request has no host")
 	}
 
+	key := bindKey(ctx, domain)
+
 	m.mu.Lock()
-	if id, ok := m.byDomain[domain]; ok {
+	if id, ok := m.byDomain[key]; ok {
 		if s := m.byID[id]; s != nil && !s.Closed() {
 			m.mu.Unlock()
 			return s, SourceDomain, nil
 		}
-		delete(m.byDomain, domain)
+		delete(m.byDomain, key)
 	}
-	if p, ok := m.pending[domain]; ok {
+	if p, ok := m.pending[key]; ok {
 		m.mu.Unlock()
 		select {
 		case <-p.done:
@@ -195,24 +242,82 @@ func (m *Manager) Resolve(ctx context.Context, h Hints) (*Session, Source, error
 		}
 	}
 	p := &pendingCreate{done: make(chan struct{})}
-	m.pending[domain] = p
+	m.pending[key] = p
 	m.mu.Unlock()
 
 	p.s, p.err = m.create(ctx, domain)
 
 	m.mu.Lock()
-	delete(m.pending, domain)
+	delete(m.pending, key)
 	if p.err == nil {
-		m.byDomain[domain] = p.s.ID
+		p.s.bindKey = key
+		m.byDomain[key] = p.s.ID
 	}
 	m.mu.Unlock()
 	close(p.done)
 	return p.s, SourceNew, p.err
 }
 
-// Create opens a new owned tab that is not bound to any domain.
+func bindKey(ctx context.Context, domain string) string {
+	return policy.FromContext(ctx).OwnerName() + "\x00" + domain
+}
+
+// Create opens a new owned tab that is not bound to any domain. It is
+// owned by the principal in ctx.
 func (m *Manager) Create(ctx context.Context) (*Session, error) {
 	return m.create(ctx, "")
+}
+
+// CreateWindow is Create, with the tab in a new browser window of its own.
+func (m *Manager) CreateWindow(ctx context.Context) (*Session, error) {
+	tab, err := m.browser.NewWindow(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("session: open window: %w", err)
+	}
+	s := m.track(tab, "", true, policy.FromContext(ctx))
+	m.log.Info("window opened", "tab", logx.Clean(s.ID), "owner", logx.Clean(s.Owner))
+	return s, nil
+}
+
+// Child tracks a tab that opener's page opened (a popup) as opener's own:
+// same owner, same session rules, owned so it closes with the session.
+// Unlike Get, a non-admin principal may take it, since it is the opener's
+// tab, not the person's. A tab already tracked is returned as Get would.
+func (m *Manager) Child(ctx context.Context, id string, opener *Session) (*Session, error) {
+	if s := m.Lookup(id); s != nil {
+		return m.Get(ctx, id)
+	}
+	if !policy.FromContext(ctx).CanUse(opener.Owner) {
+		return nil, errNotVisible(id)
+	}
+	tab, err := m.browser.AttachTab(ctx, id)
+	if err != nil {
+		if errors.Is(err, cdp.ErrNoSuchTab) {
+			return nil, fmt.Errorf("%w: %s", ErrTabGone, id)
+		}
+		return nil, err
+	}
+	m.mu.Lock()
+	if s := m.byID[id]; s != nil && !s.Closed() { // lost a race; keep the first
+		m.mu.Unlock()
+		return m.Get(ctx, id)
+	}
+	m.mu.Unlock()
+	s := m.track(tab, "", true, opener.owner)
+	s.SetRules(opener.Rules())
+	m.log.Info("popup attached", "tab", logx.Clean(id), "opener", logx.Clean(opener.ID), "owner", logx.Clean(s.Owner))
+	return s, nil
+}
+
+// Lookup returns the live session for a tab ID, or nil. Unlike Get it
+// never adopts a tab.
+func (m *Manager) Lookup(id string) *Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s := m.byID[id]; s != nil && !s.Closed() {
+		return s
+	}
+	return nil
 }
 
 func (m *Manager) create(ctx context.Context, domain string) (*Session, error) {
@@ -220,18 +325,21 @@ func (m *Manager) create(ctx context.Context, domain string) (*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session: open tab: %w", err)
 	}
-	s := m.track(tab, domain, true)
-	m.log.Info("tab opened", "tab", logx.Clean(s.ID), "domain", logx.Clean(domain))
+	p := policy.FromContext(ctx)
+	s := m.track(tab, domain, true, p)
+	m.log.Info("tab opened", "tab", logx.Clean(s.ID), "domain", logx.Clean(domain), "owner", logx.Clean(s.Owner))
 	return s, nil
 }
 
-func (m *Manager) track(tab cdp.Tab, domain string, owned bool) *Session {
+func (m *Manager) track(tab cdp.Tab, domain string, owned bool, owner *policy.Principal) *Session {
 	s := &Session{
 		ID:      tab.ID(),
 		Domain:  domain,
 		Owned:   owned,
 		Tab:     tab,
 		Created: time.Now(),
+		Owner:   owner.OwnerName(),
+		owner:   owner,
 		sem:     make(chan struct{}, 1),
 	}
 	s.Touch()
@@ -244,12 +352,22 @@ func (m *Manager) track(tab cdp.Tab, domain string, owned bool) *Session {
 // Get returns the session for a tab ID. A tab that Tether did not open but
 // that exists in Chrome is adopted (attached, never auto-closed), which is
 // how a client drives a tab the user already has open.
+//
+// A non-admin principal only gets tabs it opened; anything else, adopting
+// included, looks to it exactly like a tab that does not exist.
 func (m *Manager) Get(ctx context.Context, id string) (*Session, error) {
+	p := policy.FromContext(ctx)
 	m.mu.Lock()
 	s := m.byID[id]
 	m.mu.Unlock()
 	if s != nil && !s.Closed() {
+		if !p.CanUse(s.Owner) {
+			return nil, errNotVisible(id)
+		}
 		return s, nil
+	}
+	if !p.CanAdopt() {
+		return nil, errNotVisible(id)
 	}
 	tab, err := m.browser.AttachTab(ctx, id)
 	if err != nil {
@@ -271,13 +389,17 @@ func (m *Manager) Get(ctx context.Context, id string) (*Session, error) {
 }
 
 // Close ends a session. Owned tabs are closed in Chrome; adopted tabs are
-// only released, never closed, unless closeAdopted is set.
+// only released, never closed, unless closeAdopted is set. The principal
+// in ctx must be allowed to use the tab.
 func (m *Manager) Close(ctx context.Context, id string, closeAdopted bool) error {
 	m.mu.Lock()
 	s := m.byID[id]
 	m.mu.Unlock()
 	if s == nil || s.Closed() {
 		return fmt.Errorf("%w: %s", ErrTabGone, id)
+	}
+	if !Visible(ctx, s) {
+		return errNotVisible(id)
 	}
 	return m.end(ctx, s, ReasonExplicit, s.Owned || closeAdopted)
 }
@@ -303,8 +425,8 @@ func (m *Manager) forget(id string, why CloseReason) bool {
 		return false
 	}
 	delete(m.byID, id)
-	if s.Domain != "" && m.byDomain[s.Domain] == id {
-		delete(m.byDomain, s.Domain)
+	if s.bindKey != "" && m.byDomain[s.bindKey] == id {
+		delete(m.byDomain, s.bindKey)
 	}
 	hooks := append([]func(*Session, CloseReason){}, m.hooks...)
 	m.mu.Unlock()

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,6 +18,11 @@ type chromeTab struct {
 	b       *Chrome
 	id      string
 	session string
+
+	guardMu    sync.Mutex // serialises Guard calls
+	guardCheck atomic.Pointer[func(string) error]
+	guardUnsub func()
+	logs       *logBuffer // nil when capture is off
 }
 
 var _ Tab = (*chromeTab)(nil)
@@ -26,6 +32,13 @@ func newTab(b *Chrome, id, session string) *chromeTab {
 }
 
 func (t *chromeTab) ID() string { return t.id }
+
+func (t *chromeTab) Logs(after uint64) []LogEntry {
+	if t.logs == nil {
+		return nil
+	}
+	return t.logs.since(after)
+}
 
 func (t *chromeTab) call(ctx context.Context, method string, params, out any) error {
 	return t.b.c.call(ctx, t.session, method, params, out)
@@ -316,11 +329,14 @@ func (e *exceptionDetails) err() error {
 	if e == nil {
 		return nil
 	}
-	msg := e.Text
+	return &JSError{Text: e.message()}
+}
+
+func (e *exceptionDetails) message() string {
 	if e.Exception != nil && e.Exception.Description != "" {
-		msg = e.Exception.Description
+		return e.Exception.Description
 	}
-	return &JSError{Text: msg}
+	return e.Text
 }
 
 func (t *chromeTab) Evaluate(ctx context.Context, expr string, awaitPromise bool) (json.RawMessage, error) {

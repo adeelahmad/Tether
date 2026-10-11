@@ -82,6 +82,19 @@ type Tab interface {
 	Mouse(ctx context.Context, m MouseEvent) error
 	// Touch dispatches one touch event carrying every active touch point.
 	Touch(ctx context.Context, t TouchEvent) error
+
+	// Guard enforces check on every top-level document request the tab
+	// makes — navigations, redirects, link clicks, script-driven location
+	// changes — by pausing it in the browser (Fetch domain) and failing it
+	// with net::ERR_BLOCKED_BY_CLIENT when check returns an error. Calling
+	// Guard again replaces check; a nil check removes the guard. check runs
+	// on the event loop and must not block.
+	Guard(ctx context.Context, check func(url string) error) error
+
+	// Logs returns the buffered console messages, uncaught exceptions and
+	// browser log entries with Seq > after, oldest first. Capture starts
+	// when Tether attaches; the buffer keeps the most recent entries only.
+	Logs(after uint64) []LogEntry
 }
 
 // TabInfo describes a page target.

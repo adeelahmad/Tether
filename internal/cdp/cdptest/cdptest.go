@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/adeelahmad/tether/internal/cdp"
 )
@@ -20,6 +21,9 @@ type Page struct {
 	HTML     string // returned for rendered HTML
 	Body     []byte // returned by ResponseBody
 	Err      error
+	// RedirectTo makes the navigation end on another URL, as an HTTP
+	// redirect would. The browser-side guard sees it too.
+	RedirectTo string
 }
 
 // Browser is a fake cdp.Browser.
@@ -140,6 +144,8 @@ type Tab struct {
 
 	Navigations []string
 	Calls       []Call
+	logs        []cdp.LogEntry
+	logSeq      uint64
 	CallResult  json.RawMessage
 	EvalResult  json.RawMessage
 	// ScriptResult, when set, is returned as the "v" property of the
@@ -149,6 +155,8 @@ type Tab struct {
 	// Input records every Key, Mouse and Touch event, in order, as
 	// cdp.KeyEvent, cdp.MouseEvent or cdp.TouchEvent values.
 	Input []any
+
+	guard func(string) error
 }
 
 var _ cdp.Tab = (*Tab)(nil)
@@ -175,12 +183,26 @@ func (t *Tab) page() Page {
 
 func (t *Tab) Navigate(_ context.Context, url string, _ cdp.Wait) (*cdp.Document, error) {
 	t.mu.Lock()
+	if t.guard != nil && t.guard(url) != nil {
+		t.mu.Unlock()
+		return nil, &cdp.NavigationError{URL: url, Text: cdp.BlockedByClient}
+	}
 	t.url = url
 	t.Navigations = append(t.Navigations, url)
 	t.mu.Unlock()
 	p := t.page()
 	if p.Err != nil {
 		return nil, p.Err
+	}
+	if p.RedirectTo != "" {
+		t.mu.Lock()
+		if t.guard != nil && t.guard(p.RedirectTo) != nil {
+			t.mu.Unlock()
+			return nil, &cdp.NavigationError{URL: p.RedirectTo, Text: cdp.BlockedByClient}
+		}
+		t.url = p.RedirectTo
+		t.mu.Unlock()
+		url = p.RedirectTo
 	}
 	h := p.Header
 	if h == nil {
@@ -260,9 +282,56 @@ func (t *Tab) record(ev any) error {
 	return nil
 }
 
+// Guard records check; Navigate refuses URLs it rejects, like the real
+// browser-side guard.
+func (t *Tab) Guard(_ context.Context, check func(string) error) error {
+	t.mu.Lock()
+	t.guard = check
+	t.mu.Unlock()
+	return nil
+}
+
 // Events returns a copy of the recorded input events.
 func (t *Tab) Events() []any {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]any(nil), t.Input...)
+}
+
+// Guarded reports whether a navigation guard is installed.
+func (t *Tab) Guarded() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.guard != nil
+}
+
+// SetURL moves the tab without a navigation, as page script or a redirect
+// would.
+func (t *Tab) SetURL(url string) {
+	t.mu.Lock()
+	t.url = url
+	t.mu.Unlock()
+}
+
+// Log appends a log entry, as if the page had printed it, and returns its
+// sequence number.
+func (t *Tab) Log(level, text string) uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.logSeq++
+	e := cdp.LogEntry{Seq: t.logSeq, Time: time.Now(), Source: "console", Level: level, Text: text}
+	t.logs = append(t.logs, e)
+	return e.Seq
+}
+
+func (t *Tab) Logs(after uint64) []cdp.LogEntry {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []cdp.LogEntry
+	for _, e := range t.logs {
+		if e.Seq > after {
+			out = append(out, e)
+		}
+	}
+	return out
 }

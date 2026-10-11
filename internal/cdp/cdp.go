@@ -77,6 +77,11 @@ type Tab interface {
 
 	Click(ctx context.Context, x, y float64) error
 	Key(ctx context.Context, k KeyEvent) error
+
+	// Logs returns the buffered console messages, uncaught exceptions and
+	// browser log entries with Seq > after, oldest first. Capture starts
+	// when Tether attaches; the buffer keeps the most recent entries only.
+	Logs(after uint64) []LogEntry
 }
 
 // TabInfo describes a page target.

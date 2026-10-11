@@ -56,6 +56,11 @@ func site() *httptest.Server {
 <a id="link" href="/me?clicked=1">again</a>
 </body></html>`, user, user)
 	})
+	mux.HandleFunc("/noisy", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>noisy</title><img src="/missing.png">
+<script>console.log('hello', 42, {a: 1}); console.warn('careful'); console.error('boom');</script>
+<script>throw new Error('kaboom')</script>`)
+	})
 	mux.HandleFunc("/search", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `<!doctype html><title>results</title><h1 id="r">%s</h1>`, r.URL.Query().Get("q"))
 	})
@@ -85,7 +90,8 @@ func startTether(t *testing.T) (base string, client *http.Client) {
 	cfg := &config.Config{
 		Addr: "127.0.0.1:0", Chrome: "auto", Launch: true, Headless: true,
 		ProfileDir: dir + "/profile", DataDir: dir, IdleTimeout: time.Minute, Timeout: 30 * time.Second,
-		LogLevel: "debug", ChromeArgs: strings.Fields(os.Getenv("TETHER_CHROME_ARGS")),
+		ConsoleBuffer: 100,
+		LogLevel:      "debug", ChromeArgs: strings.Fields(os.Getenv("TETHER_CHROME_ARGS")),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	log := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -343,4 +349,126 @@ func TestWebDriver(t *testing.T) {
 	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 200 {
 		t.Fatalf("delete session: %v", err)
 	}
+}
+
+type logEntry struct {
+	Seq    uint64 `json:"seq"`
+	Source string `json:"source"`
+	Level  string `json:"level"`
+	Text   string `json:"text"`
+	URL    string `json:"url"`
+}
+
+// waitLogs polls the control API until the tab has logged everything want
+// names (text substrings), returning the response.
+func waitLogs(t *testing.T, base, tab, query string, want ...string) (entries []logEntry, next uint64) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		resp, body := send(t, http.DefaultClient, "GET", base+"/tether/v1/tabs/"+tab+"/logs"+query, nil, nil)
+		if resp.StatusCode != 200 {
+			t.Fatalf("logs: %d %s", resp.StatusCode, body)
+		}
+		var out struct {
+			Entries []logEntry `json:"entries"`
+			Next    uint64     `json:"next"`
+		}
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatal(err)
+		}
+		missing := ""
+		for _, w := range want {
+			found := false
+			for _, e := range out.Entries {
+				found = found || strings.Contains(e.Text, w)
+			}
+			if !found {
+				missing = w
+			}
+		}
+		if missing == "" {
+			return out.Entries, out.Next
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("log %q never arrived; got %+v", missing, out.Entries)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func TestConsoleLogs(t *testing.T) {
+	s := site()
+	defer s.Close()
+	base, _ := startTether(t)
+
+	resp, body := send(t, http.DefaultClient, "POST", base+"/tether/v1/tabs", strings.NewReader(`{"url":"`+s.URL+`/noisy"}`), nil)
+	if resp.StatusCode != 201 {
+		t.Fatalf("create tab: %d %s", resp.StatusCode, body)
+	}
+	tab := resp.Header.Get("X-Tether-Tab-ID")
+
+	entries, next := waitLogs(t, base, tab, "", "hello 42", "careful", "boom", "kaboom", "404")
+	bySource := map[string]logEntry{}
+	for _, e := range entries {
+		if _, ok := bySource[e.Source+"/"+e.Level]; !ok {
+			bySource[e.Source+"/"+e.Level] = e
+		}
+	}
+	for _, k := range []string{"console/info", "console/warning", "console/error", "exception/error", "network/error"} {
+		if _, ok := bySource[k]; !ok {
+			t.Errorf("no %s entry in %+v", k, entries)
+		}
+	}
+	if e := bySource["console/info"]; !strings.HasPrefix(e.Text, "hello 42 Object") || e.URL != s.URL+"/noisy" {
+		t.Errorf("console.log entry = %+v", e)
+	}
+
+	// Filtering and the cursor.
+	errs, _ := waitLogs(t, base, tab, "?level=error", "boom")
+	for _, e := range errs {
+		if e.Level != "error" {
+			t.Errorf("level filter let through %+v", e)
+		}
+	}
+	if _, err := http.DefaultClient.Do(mustReq(t, "POST", base+"/tether/v1/tabs/"+tab+"/eval", `{"expression":"console.info('later')"}`)); err != nil {
+		t.Fatal(err)
+	}
+	newer, _ := waitLogs(t, base, tab, fmt.Sprintf("?after=%d", next), "later")
+	for _, e := range newer {
+		if e.Seq <= next {
+			t.Errorf("after=%d returned an older entry %+v", next, e)
+		}
+	}
+
+	// The same buffer through WebDriver, attached to the tab.
+	resp, err := http.Post(base+"/session", "application/json",
+		strings.NewReader(`{"capabilities":{"alwaysMatch":{"tether:options":{"tabId":"`+tab+`"}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	w := &wd{t: t, base: base, sid: tab}
+	if types := w.call("GET", "/se/log/types", nil).([]any); len(types) == 0 || types[0] != "browser" {
+		t.Fatalf("log types = %v", types)
+	}
+	got := w.call("POST", "/se/log", map[string]string{"type": "browser"}).([]any)
+	levels := map[string]bool{}
+	for _, e := range got {
+		levels[e.(map[string]any)["level"].(string)] = true
+	}
+	if !levels["SEVERE"] || !levels["WARNING"] || !levels["INFO"] {
+		t.Fatalf("webdriver log levels = %v from %v", levels, got)
+	}
+	if again := w.call("POST", "/log", map[string]string{"type": "browser"}).([]any); len(again) != 0 {
+		t.Fatalf("second read repeated entries: %v", again)
+	}
+}
+
+func mustReq(t *testing.T, method, u, body string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(method, u, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return req
 }

@@ -290,6 +290,40 @@ func (c *Core) Eval(ctx context.Context, s *session.Session, expr string, awaitP
 	return s.Tab.Evaluate(ctx, expr, awaitPromise)
 }
 
+// Logs returns the console messages, uncaught exceptions and browser log
+// entries the session's tab has produced since the entry with sequence
+// number after (0 = everything still buffered), keeping only those at or
+// above minLevel ("" = all). next is the cursor to pass as after on the
+// following call; it moves past filtered-out entries too, so a poller never
+// re-reads them. Logs does not take the session lock, so it can be read
+// while a request runs in the tab, and it does not reset the idle timeout.
+func (c *Core) Logs(s *session.Session, after uint64, minLevel string) (entries []cdp.LogEntry, next uint64) {
+	all := s.Tab.Logs(after)
+	next = after
+	if len(all) > 0 {
+		next = all[len(all)-1].Seq
+	}
+	min := cdp.LevelRank(minLevel)
+	entries = make([]cdp.LogEntry, 0, len(all))
+	for _, e := range all {
+		if minLevel == "" || cdp.LevelRank(e.Level) >= min {
+			entries = append(entries, e)
+		}
+	}
+	return entries, next
+}
+
+// ParseLevel validates a minimum log level; "" means all levels.
+func ParseLevel(s string) (string, error) {
+	switch l := strings.ToLower(s); l {
+	case "", cdp.LevelDebug, cdp.LevelInfo, cdp.LevelWarning, cdp.LevelError:
+		return l, nil
+	case "warn":
+		return cdp.LevelWarning, nil
+	}
+	return "", fmt.Errorf("%w: level must be one of debug, info, warning, error", ErrBadRequest)
+}
+
 // Navigate loads rawURL in the session's tab, subject to policy. The
 // caller must hold the session lock.
 func (c *Core) Navigate(ctx context.Context, s *session.Session, rawURL string, wait cdp.Wait) (*cdp.Document, error) {

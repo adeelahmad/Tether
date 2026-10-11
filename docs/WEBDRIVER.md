@@ -58,6 +58,7 @@ With a token: `ClientConfig(remote_server_addr=..., auth_type=AuthType.BEARER, t
 | Get Window Handle(s) | `GET /session/{id}/window`, `/window/handles` |
 | Switch To Window (own handle only) | `POST /session/{id}/window` |
 | Close Window (closes the tab, ends the session) | `DELETE /session/{id}/window` |
+| Get Log / Get Log Types (Selenium extension) | `POST /session/{id}/se/log`, `GET …/se/log/types` (also `/log`, `/log/types`) — types `browser`, `driver` |
 | Get / Set Window Rect, Maximize | `GET`/`POST …/window/rect`, `POST …/window/maximize` — reports the rect; resizing your real window is intentionally a no-op |
 
 Locator strategies: `css selector`, `xpath`, `link text`,
@@ -77,6 +78,12 @@ Behaviour notes:
   keys (Enter, Tab, arrows, Backspace, …) and sticky modifiers are supported.
   Enter waits for a form submission's navigation.
 - **Page load strategy** `normal` (default), `eager` and `none` are honoured.
+- **Browser logs** (`driver.get_log("browser")`) work like ChromeDriver:
+  each call returns the console messages, uncaught exceptions and browser
+  log entries since the previous call, with levels `DEBUG`, `INFO`,
+  `WARNING` and `SEVERE`. Capture starts when Tether attaches to the tab and
+  keeps the last `--console-buffer` entries; no `goog:loggingPrefs` needed.
+  The `driver` log is always empty.
 - **Cookies** are your browser's real cookies. `DELETE /cookie` deletes the
   current site's cookies from your profile — that *will* log you out.
 

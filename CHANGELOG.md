@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Per-tab console capture: `console.*` calls, uncaught exceptions and
+  browser log entries (`Runtime.consoleAPICalled`, `Runtime.exceptionThrown`,
+  `Log.entryAdded`) are kept in a ring buffer per tab (`--console-buffer`,
+  default 1000, `0` disables) and exposed via
+  `GET /tether/v1/tabs/{id}/logs?after=&level=`, WebDriver
+  `get_log("browser")` (`/se/log`, `/log`), and `core.Core.Logs` for
+  upcoming faces.
 - Tab-session core: one session per real Chrome tab, resolved by
   `X-Tether-Tab-ID` header → `tether_tab` cookie → one default tab per
   registrable domain (Public Suffix List). Idle timeout, explicit close, and

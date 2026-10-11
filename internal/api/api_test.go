@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/adeelahmad/tether/internal/cdp/cdptest"
@@ -100,5 +101,56 @@ func TestHealthAndCA(t *testing.T) {
 	noCA := New(a.core, nil, nil)
 	if w, _ := call(t, noCA, "GET", "/tether/v1/ca.pem", ""); w.Code != 404 {
 		t.Fatalf("ca without mitm: %d", w.Code)
+	}
+}
+
+func TestLogs(t *testing.T) {
+	a, b := newAPI(t)
+	_, out := call(t, a, "POST", "/tether/v1/tabs", ``)
+	id := out["id"].(string)
+	tab, _ := b.AttachTab(context.Background(), id)
+	ft := tab.(*cdptest.Tab)
+
+	w, out := call(t, a, "GET", "/tether/v1/tabs/"+id+"/logs", "")
+	if w.Code != 200 || len(out["entries"].([]any)) != 0 || out["next"] != float64(0) {
+		t.Fatalf("empty: %d %v", w.Code, out)
+	}
+
+	ft.Log("info", "one")
+	ft.Log("error", "two")
+	ft.Log("debug", "three")
+	tests := []struct {
+		query    string
+		code     int
+		texts    []string
+		wantNext float64
+	}{
+		{"", 200, []string{"one", "two", "three"}, 3},
+		{"?after=1", 200, []string{"two", "three"}, 3},
+		{"?level=error", 200, []string{"two"}, 3},
+		{"?level=WARN", 200, []string{"two"}, 3},
+		{"?after=3", 200, nil, 3},
+		{"?after=-1", 400, nil, 0},
+		{"?level=loud", 400, nil, 0},
+	}
+	for _, tt := range tests {
+		w, out := call(t, a, "GET", "/tether/v1/tabs/"+id+"/logs"+tt.query, "")
+		if w.Code != tt.code {
+			t.Fatalf("%s: %d %v", tt.query, w.Code, out)
+		}
+		if tt.code != 200 {
+			continue
+		}
+		var texts []string
+		for _, e := range out["entries"].([]any) {
+			texts = append(texts, e.(map[string]any)["text"].(string))
+		}
+		if !reflect.DeepEqual(texts, tt.texts) || out["next"] != tt.wantNext {
+			t.Fatalf("%s: got %v next=%v", tt.query, texts, out["next"])
+		}
+	}
+
+	if w, _ := call(t, a, "GET", "/tether/v1/tabs/NOPE/logs", ""); w.Code != http.StatusGone {
+		t.Fatalf("unknown tab: %d", w.Code)
 	}
 }

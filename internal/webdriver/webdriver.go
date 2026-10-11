@@ -52,8 +52,9 @@ type wdSession struct {
 	keepTab  bool
 	strategy string // pageLoadStrategy
 
-	mu       sync.Mutex
-	timeouts Timeouts
+	mu        sync.Mutex
+	timeouts  Timeouts
+	logCursor uint64 // last log entry returned by Get Log
 }
 
 func (ws *wdSession) getTimeouts() Timeouts {
@@ -150,6 +151,12 @@ func (h *Handler) routes() {
 		c("DELETE /session/{sid}/cookie", h.deleteAllCookies)
 
 		c("GET /session/{sid}/screenshot", h.screenshot)
+
+		// Not W3C, but what Selenium 4 (se/log) and older clients (log) call.
+		c("POST /session/{sid}/se/log", h.getLog)
+		c("POST /session/{sid}/log", h.getLog)
+		c("GET /session/{sid}/se/log/types", h.getLogTypes)
+		c("GET /session/{sid}/log/types", h.getLogTypes)
 	}
 	h.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, wdErr(ErrUnknownCommand, r.Method+" "+r.URL.Path+" is not supported by Tether; see docs/WEBDRIVER.md"))

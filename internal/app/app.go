@@ -77,6 +77,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 		return nil, err
 	}
 	a.browser = chrome
+	chrome.SetLogBuffer(cfg.ConsoleBuffer)
 	if a.Browser, err = chrome.Version(cctx); err != nil {
 		return nil, fmt.Errorf("talking to chrome: %w", err)
 	}

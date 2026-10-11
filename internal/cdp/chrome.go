@@ -13,9 +13,16 @@ type Chrome struct {
 	c   *conn
 	log *slog.Logger
 
-	mu     sync.Mutex
-	hooks  []func(id string)
-	closed bool
+	mu        sync.Mutex
+	hooks     []func(id string)
+	closed    bool
+	logSize   int
+	logUnsubs map[string]logSub // by CDP session ID
+}
+
+type logSub struct {
+	target string
+	cancel func()
 }
 
 var _ Browser = (*Chrome)(nil)
@@ -29,7 +36,7 @@ func Connect(ctx context.Context, wsURL string, log *slog.Logger) (*Chrome, erro
 	if err != nil {
 		return nil, err
 	}
-	b := &Chrome{c: c, log: log}
+	b := &Chrome{c: c, log: log, logSize: DefaultLogBuffer, logUnsubs: map[string]logSub{}}
 	c.subscribe("", b.onEvent)
 	if err := c.call(ctx, "", "Target.setDiscoverTargets", map[string]any{"discover": true}, nil); err != nil {
 		_ = c.close()
@@ -38,17 +45,42 @@ func Connect(ctx context.Context, wsURL string, log *slog.Logger) (*Chrome, erro
 	return b, nil
 }
 
+// SetLogBuffer sets how many console/log entries each tab attached from now
+// on keeps. Zero or less turns capture off, which also leaves the Runtime
+// and Log domains disabled.
+func (b *Chrome) SetLogBuffer(n int) {
+	b.mu.Lock()
+	b.logSize = n
+	b.mu.Unlock()
+}
+
 func (b *Chrome) onEvent(e Event) {
-	if e.Method != "Target.targetDestroyed" {
+	if e.SessionID != "" {
+		return
+	}
+	switch e.Method {
+	case "Target.targetDestroyed", "Target.detachedFromTarget":
+	default:
 		return
 	}
 	var p struct {
-		TargetID string `json:"targetId"`
+		TargetID  string `json:"targetId"`
+		SessionID string `json:"sessionId"`
 	}
 	if json.Unmarshal(e.Params, &p) != nil {
 		return
 	}
 	b.mu.Lock()
+	for sid, s := range b.logUnsubs {
+		if sid == p.SessionID || (p.SessionID == "" && s.target == p.TargetID) {
+			s.cancel()
+			delete(b.logUnsubs, sid)
+		}
+	}
+	if e.Method != "Target.targetDestroyed" {
+		b.mu.Unlock()
+		return
+	}
 	hooks := append([]func(string){}, b.hooks...)
 	b.mu.Unlock()
 	for _, h := range hooks {
@@ -122,12 +154,31 @@ func (b *Chrome) attach(ctx context.Context, id string) (*chromeTab, error) {
 		return nil, err
 	}
 	t := newTab(b, id, res.SessionID)
-	for _, m := range []string{"Page.enable", "Network.enable"} {
+	domains := []string{"Page.enable", "Network.enable"}
+	b.mu.Lock()
+	if b.logSize > 0 {
+		// Subscribe before enabling so entries Log.enable replays are kept.
+		t.logs = newLogBuffer(b.logSize)
+		b.logUnsubs[res.SessionID] = logSub{target: id, cancel: b.c.subscribe(res.SessionID, t.logs.handle)}
+		domains = append(domains, "Runtime.enable", "Log.enable")
+	}
+	b.mu.Unlock()
+	for _, m := range domains {
 		if err := t.call(ctx, m, nil, nil); err != nil {
+			b.dropLogs(res.SessionID)
 			return nil, err
 		}
 	}
 	return t, nil
+}
+
+func (b *Chrome) dropLogs(sessionID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if s, ok := b.logUnsubs[sessionID]; ok {
+		s.cancel()
+		delete(b.logUnsubs, sessionID)
+	}
 }
 
 // CloseTab implements Browser.

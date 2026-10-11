@@ -66,7 +66,9 @@ trusted to use the browser. Tether is not a multi-tenant isolation layer.
 | An agent/script navigates somewhere it shouldn't | `--allow-domains` policy enforced for every face | Allowlist is per-instance today; per-session/agent policies are the planned extension. |
 | Tether used to read a page the user has open | Only tabs Tether opened, or tabs explicitly addressed by ID, are driven | Any authenticated client can address any tab by ID. |
 | Chrome DevTools port exposed | `--launch` binds it to loopback; Tether never re-exposes it | If you start Chrome yourself with `--remote-debugging-address=0.0.0.0`, that is outside Tether's control. |
-| Denial of service (huge bodies, many tabs) | 32 MiB request body cap; per-tab serialisation; idle reaping | A token holder can open many tabs. |
+| Secrets printed to the console by a page (tokens, PII in debug logs) | Console capture is only readable through the authenticated listener and is never written to Tether's own logs | Any token holder can read the captured console of any tab. `--console-buffer 0` turns capture off. |
+| Sites detecting automation via `Runtime.enable` | — | Console capture enables the `Runtime` domain, which some anti-bot scripts can detect. `--console-buffer 0` leaves it off. |
+| Denial of service (huge bodies, many tabs) | 32 MiB request body cap; per-tab serialisation; idle reaping; console buffer capped per tab and per entry (8 KiB) | A token holder can open many tabs. |
 
 **Out of scope.** Protecting the user from sites they are logged in to, from
 other software running as the same OS user, or from someone with physical

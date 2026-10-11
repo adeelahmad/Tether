@@ -145,8 +145,15 @@ curl -s http://127.0.0.1:8787/tether/v1/tabs                           # list se
 curl -s -X POST http://127.0.0.1:8787/tether/v1/tabs -d '{"url":"https://example.com"}'
 curl -s -X POST http://127.0.0.1:8787/tether/v1/tabs/$TAB/eval \
      -d '{"expression":"document.title"}'                               # Runtime.evaluate
+curl -s "http://127.0.0.1:8787/tether/v1/tabs/$TAB/logs?level=warning" # console + browser logs
 curl -s -X DELETE http://127.0.0.1:8787/tether/v1/tabs/$TAB            # close
 ```
+
+Every tab Tether drives keeps its recent `console.*` output, uncaught
+exceptions and browser log entries (failed requests, security warnings).
+`GET …/logs` returns `{"entries": [...], "next": N}`; pass `?after=N` to read
+only what is new, and `?level=debug|info|warning|error` to filter. The same
+buffer backs WebDriver's `driver.get_log("browser")`.
 
 ### From another machine (Tailscale)
 
@@ -174,6 +181,7 @@ Every flag has a `TETHER_*` environment variable; flags win.
 | `--chrome-bin`, `--chrome-args`, `--profile-dir` | auto | With `--launch` |
 | `--idle-timeout` | `15m` | Close tabs Tether opened after inactivity (`0` = never) |
 | `--timeout` | `60s` | Default per-request timeout |
+| `--console-buffer` | `1000` | Console/log entries kept per tab (`0` = no capture) |
 | `--allow-domains` | all | Comma-separated navigation allowlist (applies to every face) |
 | `--data-dir` | user config dir | Local CA and launched profile |
 | `--no-mitm` | `false` | Refuse HTTPS `CONNECT` instead of intercepting |
@@ -208,7 +216,8 @@ local CA, and it only drives Chromium-family browsers.
 - [x] Safe-by-default exposure, token auth, domain allowlist seam
 - [ ] MCP server face (tools over the same core) — stubbed at `/mcp`
 - [ ] Remote-browser UI with live screencast and input — stubbed at `/remote`
-- [ ] Per-session / per-agent policies; console log capture; WebDriver Actions
+- [x] Per-tab console and browser log capture (control API + WebDriver `get_log`)
+- [ ] Per-session / per-agent policies; WebDriver Actions
 
 ## Contributing
 

@@ -32,6 +32,9 @@ type Config struct {
 	ProfileDir  string
 	IdleTimeout time.Duration
 	Timeout     time.Duration
+	// ConsoleBuffer is how many console/log entries each tab keeps; 0
+	// turns capture off.
+	ConsoleBuffer int
 
 	AllowDomains []string
 	DataDir      string
@@ -67,6 +70,14 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 		}
 		fs.BoolVar(p, name, def, usage+" [$"+envName+"]")
 	}
+	integer := func(p *int, name, envName string, def int, usage string) {
+		if v, ok := env(envName); ok {
+			if n, err := strconv.Atoi(v); err == nil {
+				def = n
+			}
+		}
+		fs.IntVar(p, name, def, usage+" [$"+envName+"]")
+	}
 	dur := func(p *time.Duration, name, envName string, def time.Duration, usage string) {
 		if v, ok := env(envName); ok {
 			if d, err := time.ParseDuration(v); err == nil {
@@ -89,6 +100,7 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 	str(&c.ProfileDir, "profile-dir", "TETHER_PROFILE_DIR", "", "with --launch: Chrome profile directory (default: <data-dir>/chrome-profile)")
 	dur(&c.IdleTimeout, "idle-timeout", "TETHER_IDLE_TIMEOUT", 15*time.Minute, "close tabs Tether opened after this much inactivity (0 disables)")
 	dur(&c.Timeout, "timeout", "TETHER_TIMEOUT", 60*time.Second, "default per-request timeout")
+	integer(&c.ConsoleBuffer, "console-buffer", "TETHER_CONSOLE_BUFFER", 1000, "console and browser log entries kept per tab (0 disables capture and leaves the Runtime/Log domains off)")
 	str(&allow, "allow-domains", "TETHER_ALLOW_DOMAINS", "", "comma-separated domain allowlist (default: all)")
 	str(&c.DataDir, "data-dir", "TETHER_DATA_DIR", DefaultDataDir(), "where the local CA and launched profile live")
 	boolean(&c.NoMITM, "no-mitm", "TETHER_NO_MITM", false, "refuse HTTPS CONNECT instead of intercepting it with the local CA")
@@ -130,6 +142,9 @@ func (c *Config) Validate() error {
 	}
 	if c.IdleTimeout < 0 {
 		return errors.New("--idle-timeout must not be negative")
+	}
+	if c.ConsoleBuffer < 0 {
+		return errors.New("--console-buffer must not be negative")
 	}
 	if c.Token != "" && len(c.Token) < 16 {
 		return errors.New("--token must be at least 16 characters")

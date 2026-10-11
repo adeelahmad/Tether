@@ -47,9 +47,11 @@ func (h *Handler) uploadFile(_ context.Context, ws *wdSession, _ *http.Request, 
 		return nil, wdErr(ErrInvalidArgument, "the archive must hold exactly one file")
 	}
 	f := files[0]
-	name := filepath.Base(filepath.FromSlash(f.Name)) // never a path out of the temp dir
-	if name == "." || name == ".." || name == string(filepath.Separator) {
-		return nil, wdErr(ErrInvalidArgument, "the archived file has no name")
+	// Keep only the base name, so an entry can never point outside the
+	// temp dir (zip slip).
+	name := filepath.Base(filepath.FromSlash(f.Name))
+	if name == "." || name == string(filepath.Separator) || strings.Contains(name, "..") {
+		return nil, wdErr(ErrInvalidArgument, "the archived file has no usable name")
 	}
 	dir, err := os.MkdirTemp("", "tether-upload-")
 	if err != nil {
@@ -57,6 +59,9 @@ func (h *Handler) uploadFile(_ context.Context, ws *wdSession, _ *http.Request, 
 	}
 	ws.addUpload(dir)
 	path := filepath.Join(dir, name)
+	if !strings.HasPrefix(path, filepath.Clean(dir)+string(filepath.Separator)) {
+		return nil, wdErr(ErrInvalidArgument, "the archived file has no usable name")
+	}
 	if err := unzipTo(f, path); err != nil {
 		return nil, err
 	}

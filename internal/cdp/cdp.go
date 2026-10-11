@@ -77,6 +77,11 @@ type Tab interface {
 
 	Click(ctx context.Context, x, y float64) error
 	Key(ctx context.Context, k KeyEvent) error
+	// Mouse dispatches one mouse or pen event (move, press, release,
+	// wheel) in viewport CSS pixels.
+	Mouse(ctx context.Context, m MouseEvent) error
+	// Touch dispatches one touch event carrying every active touch point.
+	Touch(ctx context.Context, t TouchEvent) error
 
 	// Guard enforces check on every top-level document request the tab
 	// makes — navigations, redirects, link clicks, script-driven location
@@ -187,6 +192,49 @@ type KeyEvent struct {
 	Text      string `json:"text,omitempty"`
 	KeyCode   int    `json:"windowsVirtualKeyCode,omitempty"`
 	Modifiers int    `json:"modifiers,omitempty"`
+}
+
+// MouseEvent is a single Input.dispatchMouseEvent.
+type MouseEvent struct {
+	Type       string  `json:"type"` // mouseMoved, mousePressed, mouseReleased, mouseWheel
+	X          float64 `json:"x"`
+	Y          float64 `json:"y"`
+	Modifiers  int     `json:"modifiers,omitempty"`
+	Button     string  `json:"button,omitempty"` // none, left, middle, right, back, forward
+	Buttons    int     `json:"buttons,omitempty"`
+	ClickCount int     `json:"clickCount,omitempty"`
+	DeltaX     float64 `json:"deltaX,omitempty"`
+	DeltaY     float64 `json:"deltaY,omitempty"`
+
+	PointerType        string  `json:"pointerType,omitempty"` // mouse, pen
+	Force              float64 `json:"force,omitempty"`
+	TangentialPressure float64 `json:"tangentialPressure,omitempty"`
+	TiltX              float64 `json:"tiltX,omitempty"`
+	TiltY              float64 `json:"tiltY,omitempty"`
+	Twist              int     `json:"twist,omitempty"`
+}
+
+// TouchPoint is one finger of a TouchEvent.
+type TouchPoint struct {
+	ID                 int     `json:"id"`
+	X                  float64 `json:"x"`
+	Y                  float64 `json:"y"`
+	RadiusX            float64 `json:"radiusX,omitempty"`
+	RadiusY            float64 `json:"radiusY,omitempty"`
+	Force              float64 `json:"force,omitempty"`
+	TangentialPressure float64 `json:"tangentialPressure,omitempty"`
+	TiltX              float64 `json:"tiltX,omitempty"`
+	TiltY              float64 `json:"tiltY,omitempty"`
+	Twist              int     `json:"twist,omitempty"`
+}
+
+// TouchEvent is a single Input.dispatchTouchEvent. Chrome diffs
+// TouchPoints against the previous event, so it must list every finger
+// still down; touchEnd and touchCancel carry none.
+type TouchEvent struct {
+	Type        string       `json:"type"` // touchStart, touchMove, touchEnd, touchCancel
+	TouchPoints []TouchPoint `json:"touchPoints"`
+	Modifiers   int          `json:"modifiers,omitempty"`
 }
 
 // JSError is an exception thrown by page JavaScript.

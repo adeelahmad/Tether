@@ -560,3 +560,28 @@ func (t *chromeTab) Click(ctx context.Context, x, y float64) error {
 func (t *chromeTab) Key(ctx context.Context, k KeyEvent) error {
 	return t.call(ctx, "Input.dispatchKeyEvent", k, nil)
 }
+
+func (t *chromeTab) Mouse(ctx context.Context, m MouseEvent) error {
+	if m.Type == "mouseWheel" { // Chrome requires both deltas, even when zero
+		return t.call(ctx, "Input.dispatchMouseEvent", struct {
+			MouseEvent
+			DeltaX float64 `json:"deltaX"`
+			DeltaY float64 `json:"deltaY"`
+		}{m, m.DeltaX, m.DeltaY}, nil)
+	}
+	return t.call(ctx, "Input.dispatchMouseEvent", m, nil)
+}
+
+func (t *chromeTab) Touch(ctx context.Context, e TouchEvent) error {
+	if e.TouchPoints == nil {
+		e.TouchPoints = []TouchPoint{}
+	}
+	// Chrome only acknowledges touch input in a visible tab; in a
+	// background tab the dispatch hangs. Mouse and keys need no such step.
+	if e.Type == "touchStart" {
+		if err := t.call(ctx, "Page.bringToFront", nil, nil); err != nil {
+			return err
+		}
+	}
+	return t.call(ctx, "Input.dispatchTouchEvent", e, nil)
+}

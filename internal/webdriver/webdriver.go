@@ -56,6 +56,10 @@ type wdSession struct {
 	mu        sync.Mutex
 	timeouts  Timeouts
 	logCursor uint64 // last log entry returned by Get Log
+
+	// input is the Actions API input state. Commands on a session are
+	// serialised by the tab lock, so it needs no lock of its own.
+	input inputState
 }
 
 func (ws *wdSession) getTimeouts() Timeouts {
@@ -153,6 +157,8 @@ func (h *Handler) routes() {
 
 		c("GET /session/{sid}/screenshot", h.screenshot)
 
+		c("POST /session/{sid}/actions", h.performActions)
+		c("DELETE /session/{sid}/actions", h.releaseActions)
 		// Not W3C, but what Selenium 4 (se/log) and older clients (log) call.
 		c("POST /session/{sid}/se/log", h.getLog)
 		c("POST /session/{sid}/log", h.getLog)

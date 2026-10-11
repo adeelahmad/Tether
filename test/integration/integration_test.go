@@ -64,6 +64,22 @@ func site() *httptest.Server {
 	mux.HandleFunc("/search", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `<!doctype html><title>results</title><h1 id="r">%s</h1>`, r.URL.Query().Get("q"))
 	})
+	mux.HandleFunc("/actions", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>actions</title>
+<style>body{margin:0;height:4000px} .box{position:absolute;width:100px;height:100px}</style>
+<div id="a" class="box" style="left:20px;top:20px;background:red"></div>
+<div id="b" class="box" style="left:300px;top:20px;background:blue"></div>
+<input id="t" style="position:absolute;left:20px;top:200px">
+<div id="far" class="box" style="left:20px;top:3000px;background:green"></div>
+<script>
+window.log = [];
+const rec = (e) => log.push([e.type, e.target.id || e.target.tagName, e.key || '',
+  e.detail || 0, e.ctrlKey ? 'ctrl' : '', e.shiftKey ? 'shift' : ''].join(':'));
+for (const t of ['mousedown','mouseup','click','dblclick','contextmenu','keydown','keyup','touchstart','touchend'])
+  addEventListener(t, rec, true);
+addEventListener('contextmenu', (e) => e.preventDefault());
+</script>`)
+	})
 	mux.HandleFunc("/api/echo", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		c, _ := r.Cookie("sid")
@@ -482,4 +498,120 @@ func mustReq(t *testing.T, method, u, body string) *http.Request {
 		t.Fatal(err)
 	}
 	return req
+}
+
+func TestWebDriverActions(t *testing.T) {
+	s := site()
+	defer s.Close()
+	base, _ := startTether(t)
+
+	resp, err := http.Post(base+"/session", "application/json",
+		strings.NewReader(`{"capabilities":{"alwaysMatch":{"browserName":"chrome","timeouts":{"pageLoad":20000}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ns struct {
+		Value struct {
+			SessionID string `json:"sessionId"`
+		} `json:"value"`
+	}
+	json.NewDecoder(resp.Body).Decode(&ns)
+	resp.Body.Close()
+	w := &wd{t: t, base: base, sid: ns.Value.SessionID}
+	defer func() {
+		req, _ := http.NewRequest("DELETE", base+"/session/"+w.sid, nil)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	w.call("POST", "/url", map[string]string{"url": s.URL + "/actions"})
+
+	el := func(css string) map[string]string { return map[string]string{webdriver.ElementKey: w.find(css)} }
+	a, b := el("#a"), el("#b")
+	mouse := func(acts ...any) map[string]any {
+		return map[string]any{"type": "pointer", "id": "mouse", "parameters": map[string]string{"pointerType": "mouse"}, "actions": acts}
+	}
+	keys := func(acts ...any) map[string]any { return map[string]any{"type": "key", "id": "kb", "actions": acts} }
+	moveTo := func(origin any) map[string]any {
+		return map[string]any{"type": "pointerMove", "origin": origin, "x": 0, "y": 0}
+	}
+	down := func(btn int) map[string]any { return map[string]any{"type": "pointerDown", "button": btn} }
+	up := func(btn int) map[string]any { return map[string]any{"type": "pointerUp", "button": btn} }
+	kd := func(v string) map[string]any { return map[string]any{"type": "keyDown", "value": v} }
+	ku := func(v string) map[string]any { return map[string]any{"type": "keyUp", "value": v} }
+	pause := map[string]any{"type": "pause", "duration": 0}
+	perform := func(seqs ...any) { w.call("POST", "/actions", map[string]any{"actions": seqs}) }
+	events := func() string {
+		v := w.call("POST", "/execute/sync", map[string]any{"script": "const l = log; window.log = []; return l.join(' ');", "args": []any{}})
+		return v.(string)
+	}
+	expect := func(what, got string, want ...string) {
+		t.Helper()
+		for _, s := range want {
+			if !strings.Contains(got, s) {
+				t.Fatalf("%s: missing %q in %s", what, s, got)
+			}
+		}
+	}
+
+	perform(mouse(moveTo(a), down(0), up(0), down(0), up(0)))
+	expect("double click", events(), "click:a::1::", "click:a::2::", "dblclick:a::2::")
+
+	perform(mouse(moveTo(b), down(2), up(2)))
+	expect("context click", events(), "contextmenu:b:")
+
+	perform(keys(kd("\uE009"), pause, pause, ku("\uE009")), mouse(moveTo(a), down(0), up(0)))
+	expect("ctrl click", events(), "click:a::1:ctrl:")
+
+	perform(mouse(moveTo(a), down(0), map[string]any{"type": "pointerMove", "origin": b, "x": 0, "y": 0, "duration": 100}, up(0)))
+	expect("drag", events(), "mousedown:a:", "mouseup:b:")
+
+	in := el("#t")
+	perform(mouse(moveTo(in), down(0), up(0)))
+	perform(keys(kd("\uE008"), kd("h"), ku("h"), kd("i"), ku("i"), ku("\uE008"), kd("1"), ku("1")))
+	if got := w.call("GET", "/element/"+in[webdriver.ElementKey]+"/property/value", nil); got != "HI1" {
+		t.Fatalf("typed = %v", got)
+	}
+	expect("keys", events(), "keydown:t:H:0::shift", "keydown:t:1:0::")
+
+	perform(map[string]any{"type": "pointer", "id": "finger", "parameters": map[string]string{"pointerType": "touch"},
+		"actions": []any{moveTo(a), down(0), up(0)}})
+	expect("tap", events(), "touchstart:a:", "touchend:a:")
+
+	// An element below the fold is scrolled into view to be reached.
+	perform(mouse(moveTo(el("#far")), down(0), up(0)))
+	expect("far click", events(), "click:far:")
+
+	perform(map[string]any{"type": "wheel", "id": "wheel", "actions": []any{
+		map[string]any{"type": "scroll", "x": 10, "y": 10, "deltaX": 0, "deltaY": -2000},
+	}})
+	var y float64
+	for i := 0; i < 50; i++ {
+		y = w.call("POST", "/execute/sync", map[string]any{"script": "return scrollY", "args": []any{}}).(float64)
+		if y < 2000 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if y >= 2000 {
+		t.Fatalf("wheel did not scroll up: scrollY = %v", y)
+	}
+
+	// Out of the viewport is a W3C error, not a silent no-op.
+	body, _ := json.Marshal(map[string]any{"actions": []any{mouse(map[string]any{"type": "pointerMove", "x": -5, "y": 0})}})
+	resp, err = http.Post(base+"/session/"+w.sid+"/actions", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 500 || !strings.Contains(string(out), "move target out of bounds") {
+		t.Fatalf("out of bounds: %d %s", resp.StatusCode, out)
+	}
+
+	// Release lets go of keys still held.
+	perform(keys(kd("\uE008")))
+	events()
+	w.call("DELETE", "/actions", nil)
+	expect("release", events(), "keyup:", ":Shift:")
 }

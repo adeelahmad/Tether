@@ -154,7 +154,7 @@ func TestTimeouts(t *testing.T) {
 
 func TestUnknownCommandAndWindows(t *testing.T) {
 	h, _, _ := newHandler(t)
-	code, out := do(t, h, "POST", "/session/x/actions", map[string]any{})
+	code, out := do(t, h, "POST", "/session/x/se/bogus", map[string]any{})
 	if code != 404 || errCode(out) != ErrUnknownCommand {
 		t.Fatalf("%d %v", code, out)
 	}

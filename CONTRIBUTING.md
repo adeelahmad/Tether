@@ -63,5 +63,5 @@ it.
 
 Please don't open public issues for vulnerabilities — see [SECURITY.md](SECURITY.md).
 
-By contributing you agree that your contributions are licensed under the MIT
-License and that you'll follow our [Code of Conduct](CODE_OF_CONDUCT.md).
+By contributing you agree that your contributions are licensed under the GNU
+General Public License v3.0 or later and that you'll follow our [Code of Conduct](CODE_OF_CONDUCT.md).

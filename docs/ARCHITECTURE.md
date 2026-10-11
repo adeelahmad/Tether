@@ -17,6 +17,7 @@ flowchart LR
 
   subgraph tether[tether serve — one listener]
     direction TB
+    F[frontdoor<br/>snail007/goproxy decoder]
     G[auth · loopback guard · recover]
     P[Proxy face<br/>HTTP + CONNECT/MITM]
     W[WebDriver face<br/>W3C common set]
@@ -33,10 +34,11 @@ flowchart LR
 
   Chrome[(Your Chrome<br/>real profile, real cookies)]
 
-  C1 --> G --> P
-  C2 --> G --> W
-  C3 --> G --> M
-  C4 --> G --> R
+  C1 & C2 & C3 & C4 --> F --> G
+  G --> P
+  G --> W
+  G --> M
+  G --> R
   G --> A
   P & W & M & R & A --> E
   E --> S
@@ -59,7 +61,8 @@ flowchart LR
 | `internal/proxy` | Forward-proxy face. Plain HTTP and CONNECT with TLS interception via `internal/certs`. |
 | `internal/webdriver` | W3C WebDriver face (see [WEBDRIVER.md](WEBDRIVER.md)). |
 | `internal/api` | Control plane: health, whoami, tabs, tab policies, eval, CA download. |
-| `internal/server` | Listener, routing, per-token auth, loopback guard, graceful shutdown, exposure checks. |
+| `internal/frontdoor` | Accepts connections and classifies each with snail007/goproxy's HTTP decoder before handing it to `net/http`. Reads the whole request head first (goproxy's decoder does one fixed-size read), recovers its panics on malformed heads, and discards the global `log` output it writes request lines to. |
+| `internal/server` | Routing, per-token auth, loopback guard, graceful shutdown, exposure checks. |
 | `internal/mcp` | MCP face: Streamable HTTP transport, per-agent sessions, browser tools, and the stdio bridge (see [MCP.md](MCP.md)). |
 | `internal/remote` | Remote-browser face: the embedded web app, a per-tab screencast hub, and the websocket input protocol (see [REMOTE.md](REMOTE.md)). |
 | `internal/certs`, `internal/logx`, `internal/config`, `internal/version`, `internal/httpx` | Supporting pieces. |

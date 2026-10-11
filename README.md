@@ -10,7 +10,7 @@ One self-contained binary. Speaks MCP, plain HTTP proxy and WebDriver. Drives Ch
 [![CI](https://github.com/adeelahmad/tether/actions/workflows/ci.yml/badge.svg)](https://github.com/adeelahmad/tether/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/adeelahmad/tether)](https://goreportcard.com/report/github.com/adeelahmad/tether)
 [![Latest release](https://img.shields.io/github/v/release/adeelahmad/tether?sort=semver)](https://github.com/adeelahmad/tether/releases)
-[![License: MIT](https://img.shields.io/github/license/adeelahmad/tether)](LICENSE)
+[![License: GPL v3](https://img.shields.io/github/license/adeelahmad/tether)](LICENSE)
 
 <img src="docs/demo.gif" alt="Tether driving a real Chrome tab: curl through the proxy returns a logged-in page" width="760"/>
 
@@ -277,4 +277,4 @@ Issues and PRs welcome — start with [CONTRIBUTING.md](CONTRIBUTING.md) and
 
 ## License
 
-[MIT](LICENSE) © Adeel Ahmad
+[GPL-3.0-or-later](LICENSE) © Adeel Ahmad. The proxy front door builds on [snail007/goproxy](https://github.com/snail007/goproxy) (GPLv3).

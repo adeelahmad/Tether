@@ -71,7 +71,7 @@ dockers_v2:
       org.opencontainers.image.version: "{{ .Version }}"
       org.opencontainers.image.revision: "{{ .FullCommit }}"
       org.opencontainers.image.source: "{{ .GitURL }}"
-      org.opencontainers.image.licenses: MIT
+      org.opencontainers.image.licenses: GPL-3.0-or-later
 
 # The Homebrew cask is published to adeelahmad/homebrew-tap only when the
 # HOMEBREW_TAP_GITHUB_TOKEN secret is set (a PAT with write access to that
@@ -87,7 +87,7 @@ homebrew_casks:
     directory: Casks
     homepage: https://github.com/adeelahmad/tether
     description: Your logged-in Chrome as a proxy and WebDriver endpoint, from anywhere. No extension.
-    license: MIT
+    license: GPL-3.0-or-later
     skip_upload: '{{ if index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}auto{{ else }}true{{ end }}'
     hooks:
       post:

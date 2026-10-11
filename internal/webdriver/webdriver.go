@@ -11,7 +11,6 @@ package webdriver
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -28,6 +27,9 @@ import (
 
 // ElementKey is the W3C web element identifier key.
 const ElementKey = "element-6066-11e4-a52e-4f735466cecf"
+
+// ShadowKey is the W3C shadow root identifier key.
+const ShadowKey = "shadow-6066-11e4-a52e-4f735466cecf"
 
 // Handler serves the WebDriver endpoints at / and /wd/hub.
 type Handler struct {
@@ -48,19 +50,36 @@ type Timeouts struct {
 	Implicit int64  `json:"implicit"`
 }
 
+// A wdSession starts as one tab and grows a window for every tab it opens
+// (New Window) and every popup its pages open. Its ID is the first tab's.
 type wdSession struct {
-	s        *session.Session
-	keepTab  bool
+	id       string
+	keepTab  bool   // leave the first tab open when the session ends
 	strategy string // pageLoadStrategy
+	prompt   string // unhandledPromptBehavior
+
+	// run serialises commands and guards the browsing context: the
+	// current window and the frame path within it.
+	run        sync.Mutex
+	s          *session.Session
+	frames     []int
+	promptText *string // text for the open prompt, sent on accept
 
 	mu        sync.Mutex
 	timeouts  Timeouts
-	logCursor uint64 // last log entry returned by Get Log
+	handles   []string        // open windows, in the order they were seen
+	ignore    map[string]bool // tabs that predate the session: never its popups
+	uploads   []string        // temp dirs holding uploaded files
+	logCursor uint64          // last log entry returned by Get Log
 
 	// input is the Actions API input state. Commands on a session are
 	// serialised by the tab lock, so it needs no lock of its own.
 	input inputState
 }
+
+// tab is the current browsing context: the current window, or a frame in
+// it.
+func (ws *wdSession) tab() cdp.Tab { return ws.s.Tab.InFrame(ws.frames) }
 
 func (ws *wdSession) getTimeouts() Timeouts {
 	ws.mu.Lock()
@@ -85,9 +104,15 @@ func New(c *core.Core, log *slog.Logger) *Handler {
 	}
 	h := &Handler{core: c, log: log.With("face", "webdriver"), mux: http.NewServeMux(), sessions: map[string]*wdSession{}}
 	c.Sessions.OnClose(func(s *session.Session, _ session.CloseReason) {
+		// A WebDriver session ends with its last window.
 		h.mu.Lock()
-		delete(h.sessions, s.ID)
-		h.mu.Unlock()
+		defer h.mu.Unlock()
+		for id, ws := range h.sessions {
+			if ws.dropWindow(s.ID) == 0 {
+				delete(h.sessions, id)
+				go ws.removeUploads()
+			}
+		}
 	})
 	h.routes()
 	return h
@@ -101,15 +126,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) { h.mux.Serv
 
 type command func(ctx context.Context, ws *wdSession, r *http.Request, body []byte) (any, error)
 
+// What a command needs before it runs.
+type need int
+
+const (
+	// needWindow: an open current window, with user prompts handled per
+	// the session's unhandledPromptBehavior first.
+	needWindow need = iota
+	// needWindowOnly: an open current window; prompts are left alone
+	// (the alert commands themselves).
+	needWindowOnly
+	// needSession: just the session.
+	needSession
+)
+
 func (h *Handler) routes() {
 	for _, p := range []string{"", "/wd/hub"} {
 		h.mux.HandleFunc("GET "+p+"/status", h.status)
 		h.mux.HandleFunc("POST "+p+"/session", h.newSession)
 		h.mux.HandleFunc("DELETE "+p+"/session/{sid}", h.deleteSession)
 
-		c := func(pattern string, fn command) { h.mux.Handle(withPrefix(pattern, p), h.cmd(fn)) }
-		c("GET /session/{sid}/timeouts", h.getTimeouts)
-		c("POST /session/{sid}/timeouts", h.setTimeouts)
+		c := func(pattern string, fn command) { h.mux.Handle(withPrefix(pattern, p), h.cmd(fn, needWindow)) }
+		cs := func(pattern string, fn command) { h.mux.Handle(withPrefix(pattern, p), h.cmd(fn, needSession)) }
+		ca := func(pattern string, fn command) { h.mux.Handle(withPrefix(pattern, p), h.cmd(fn, needWindowOnly)) }
+		cs("GET /session/{sid}/timeouts", h.getTimeouts)
+		cs("POST /session/{sid}/timeouts", h.setTimeouts)
 
 		c("POST /session/{sid}/url", h.navigate)
 		c("GET /session/{sid}/url", h.currentURL)
@@ -119,12 +160,23 @@ func (h *Handler) routes() {
 		c("GET /session/{sid}/title", h.title)
 
 		c("GET /session/{sid}/window", h.windowHandle)
-		c("GET /session/{sid}/window/handles", h.windowHandles)
-		c("POST /session/{sid}/window", h.switchWindow)
+		cs("GET /session/{sid}/window/handles", h.windowHandles)
+		cs("POST /session/{sid}/window", h.switchWindow)
 		c("DELETE /session/{sid}/window", h.closeWindow)
+		c("POST /session/{sid}/window/new", h.newWindow)
 		c("GET /session/{sid}/window/rect", h.windowRect)
-		c("POST /session/{sid}/window/rect", h.windowRect)
-		c("POST /session/{sid}/window/maximize", h.windowRect)
+		c("POST /session/{sid}/window/rect", h.setWindowRect)
+		c("POST /session/{sid}/window/maximize", h.windowState("maximized"))
+		c("POST /session/{sid}/window/minimize", h.windowState("minimized"))
+		c("POST /session/{sid}/window/fullscreen", h.windowState("fullscreen"))
+
+		c("POST /session/{sid}/frame", h.switchFrame)
+		c("POST /session/{sid}/frame/parent", h.parentFrame)
+
+		ca("GET /session/{sid}/alert/text", h.alertText)
+		ca("POST /session/{sid}/alert/text", h.sendAlertText)
+		ca("POST /session/{sid}/alert/accept", h.answerAlert(true))
+		ca("POST /session/{sid}/alert/dismiss", h.answerAlert(false))
 
 		c("POST /session/{sid}/element", h.findElement(false))
 		c("POST /session/{sid}/elements", h.findElements(false))
@@ -144,6 +196,9 @@ func (h *Handler) routes() {
 		c("GET /session/{sid}/element/{eid}/property/{name}", h.elementScript(scriptProperty, "name"))
 		c("GET /session/{sid}/element/{eid}/css/{name}", h.elementScript(scriptCSS, "name"))
 		c("GET /session/{sid}/element/{eid}/screenshot", h.elementScreenshot)
+		c("GET /session/{sid}/element/{eid}/shadow", h.shadowRoot)
+		c("POST /session/{sid}/shadow/{shid}/element", h.findFromShadow(false))
+		c("POST /session/{sid}/shadow/{shid}/elements", h.findFromShadow(true))
 
 		c("GET /session/{sid}/source", h.source)
 		c("POST /session/{sid}/execute/sync", h.execute(false))
@@ -156,6 +211,12 @@ func (h *Handler) routes() {
 		c("DELETE /session/{sid}/cookie", h.deleteAllCookies)
 
 		c("GET /session/{sid}/screenshot", h.screenshot)
+		c("POST /session/{sid}/print", h.print)
+
+		// Selenium's file detector uploads a zipped file, then sends its
+		// returned path as the keys for an <input type=file>.
+		cs("POST /session/{sid}/se/file", h.uploadFile)
+		cs("POST /session/{sid}/file", h.uploadFile)
 
 		c("POST /session/{sid}/actions", h.performActions)
 		c("DELETE /session/{sid}/actions", h.releaseActions)
@@ -188,13 +249,13 @@ func (h *Handler) lookup(ctx context.Context, id string) (*wdSession, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	ws, ok := h.sessions[id]
-	if !ok || ws.s.Closed() || !session.Visible(ctx, ws.s) {
+	if !ok || !session.Visible(ctx, ws.s) {
 		return nil, wdErr(ErrInvalidSessionID, "no active session with ID "+id)
 	}
 	return ws, nil
 }
 
-func (h *Handler) cmd(fn command) http.Handler {
+func (h *Handler) cmd(fn command, n need) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ws, err := h.lookup(r.Context(), r.PathValue("sid"))
 		if err != nil {
@@ -212,15 +273,16 @@ func (h *Handler) cmd(fn command) http.Handler {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), limit+5*time.Second)
 		defer cancel()
-		unlock, err := ws.s.Lock(ctx)
-		if err != nil {
-			if errors.Is(err, session.ErrTabGone) {
-				err = wdErr(ErrInvalidSessionID, "session ended: the tab was closed")
+		ws.run.Lock()
+		defer ws.run.Unlock()
+		if n != needSession {
+			unlock, err := h.enterWindow(ctx, ws, n == needWindow)
+			if err != nil {
+				writeError(w, err)
+				return
 			}
-			writeError(w, err)
-			return
+			defer unlock()
 		}
-		defer unlock()
 		v, err := fn(ctx, ws, r, body)
 		if err != nil {
 			h.log.Debug("command failed", "path", logx.Clean(r.URL.Path), "err", logx.Clean(err.Error()))
@@ -259,6 +321,11 @@ type TetherOptions struct {
 	// KeepTab leaves the tab open when the session is deleted. It defaults
 	// to true for attached tabs and false for new ones.
 	KeepTab *bool `json:"keepTab"`
+	// NewWindow opens the session's tab in a browser window of its own
+	// instead of a background tab, so window commands (resize, maximise,
+	// fullscreen) act on a window that only this session uses.
+	NewWindow bool `json:"newWindow"`
+
 	// Policy sets session rules on the tab: domains it may (allow) and may
 	// not (deny) navigate to, on top of the global and token rules.
 	Policy *policy.Rules `json:"policy"`
@@ -336,14 +403,30 @@ func (h *Handler) newSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	prompt, err := promptBehavior(caps["unhandledPromptBehavior"])
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
+	// Tabs that already exist are never treated as this session's popups.
+	ignore := map[string]bool{}
+	if tabs, err := h.core.Browser.Tabs(ctx); err == nil {
+		for _, t := range tabs {
+			ignore[t.ID] = true
+		}
+	}
 	var s *session.Session
 	keep := false
-	if opts.TabID != "" {
+	switch {
+	case opts.TabID != "":
 		s, err = h.core.Sessions.Get(ctx, opts.TabID)
 		keep = true
-	} else {
+	case opts.NewWindow:
+		s, err = h.core.Sessions.CreateWindow(ctx)
+	default:
 		s, err = h.core.Sessions.Create(ctx)
 	}
 	if err != nil {
@@ -365,7 +448,11 @@ func (h *Handler) newSession(w http.ResponseWriter, r *http.Request) {
 	if opts.KeepTab != nil {
 		keep = *opts.KeepTab
 	}
-	ws := &wdSession{s: s, keepTab: keep, strategy: strategy, timeouts: timeouts}
+	delete(ignore, s.ID)
+	ws := &wdSession{
+		id: s.ID, s: s, keepTab: keep, strategy: strategy, prompt: prompt, timeouts: timeouts,
+		handles: []string{s.ID}, ignore: ignore,
+	}
 	h.mu.Lock()
 	if _, exists := h.sessions[s.ID]; exists {
 		h.mu.Unlock()
@@ -385,11 +472,11 @@ func (h *Handler) newSession(w http.ResponseWriter, r *http.Request) {
 			"platformName":              platformName(),
 			"acceptInsecureCerts":       false,
 			"pageLoadStrategy":          strategy,
-			"setWindowRect":             false,
+			"setWindowRect":             true,
 			"strictFileInteractability": false,
-			"unhandledPromptBehavior":   "dismiss and notify",
+			"unhandledPromptBehavior":   prompt,
 			"timeouts":                  timeouts,
-			"tether:options":            map[string]any{"tabId": s.ID, "keepTab": keep, "policy": s.Rules()},
+			"tether:options":            map[string]any{"tabId": s.ID, "keepTab": keep, "newWindow": opts.NewWindow, "policy": s.Rules()},
 		},
 	})
 }
@@ -405,12 +492,19 @@ func (h *Handler) deleteSession(w http.ResponseWriter, r *http.Request) {
 	}
 	delete(h.sessions, id)
 	h.mu.Unlock()
-	if ok && !ws.keepTab {
+	if ok {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
-		if err := h.core.Sessions.Close(ctx, id, true); err != nil && !errors.Is(err, session.ErrTabGone) {
-			h.log.Warn("closing tab for deleted session", "tab", id, "err", err)
+		ws.run.Lock()
+		h.refreshHandles(ctx, ws)
+		for _, tab := range ws.windowList() {
+			if tab == ws.id && ws.keepTab {
+				continue
+			}
+			h.closeTab(ctx, tab)
 		}
+		ws.run.Unlock()
+		ws.removeUploads()
 	}
 	writeValue(w, http.StatusOK, nil)
 }

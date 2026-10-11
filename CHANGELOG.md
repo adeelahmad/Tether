@@ -38,6 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   browser's cookies. HTTPS via a local CA (`/tether/v1/ca.pem`).
 - W3C WebDriver endpoints for the common Selenium command set
   (see `docs/WEBDRIVER.md`), sharing the same sessions as the proxy.
+- WebDriver: frames (same- and cross-site, nested) and shadow roots (open
+  and closed); alerts, confirms and prompts with `unhandledPromptBehavior`;
+  multiple windows (New Window, popups, switching, closing); window rect,
+  maximise, minimise and fullscreen for windows the session owns; file
+  uploads, including Selenium's remote file upload; and Print Page.
+- Background tabs get Chrome focus emulation, so real input reaches pages
+  with cross-site iframes promptly.
 - WebDriver Actions API (`POST`/`DELETE /session/{id}/actions`): key,
   mouse, pen, touch and wheel input as real CDP events, so `ActionChains`
   hover, drag and drop, double/context click, modifier chords and scrolling

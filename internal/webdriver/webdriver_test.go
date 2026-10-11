@@ -217,9 +217,10 @@ func TestElementRefs(t *testing.T) {
 	v := replacePlaceholders(map[string]any{
 		"a": []any{map[string]any{"__tetherEl": float64(1)}, "x"},
 		"b": map[string]any{"__tetherEl": float64(0)},
-	}, []string{"e1", "e2"})
+		"c": map[string]any{"__tetherEl": float64(0), "s": float64(1)},
+	}, []int{1, 2})
 	b, _ := json.Marshal(v)
-	want := `{"a":[{"` + ElementKey + `":"e2"},"x"],"b":{"` + ElementKey + `":"e1"}}`
+	want := `{"a":[{"` + ElementKey + `":"e2"},"x"],"b":{"` + ElementKey + `":"e1"},"c":{"` + ShadowKey + `":"s1"}}`
 	if string(b) != want {
 		t.Fatalf("got %s", b)
 	}

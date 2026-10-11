@@ -73,6 +73,10 @@ duplicate secrets are startup errors.
 - The proxy's default tab per site is per token: two agents browsing
   `github.com` get two tabs.
 - Only admin tokens can adopt tabs Tether did not open.
+- WebDriver popups and new windows belong to the session that opened them:
+  same owner, same session rules, guarded the same way. A popup that loaded
+  a forbidden page before Tether attached is closed when the session
+  switches to it, and the switch fails.
 - With no authentication configured (loopback, no token) everything behaves
   as before: one implicit admin.
 

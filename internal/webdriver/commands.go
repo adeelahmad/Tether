@@ -27,13 +27,23 @@ func (h *Handler) navigate(ctx context.Context, ws *wdSession, _ *http.Request, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(ws.getTimeouts().PageLoad)*time.Millisecond)
 	defer cancel()
+	ws.frames = nil
 	if _, err := h.core.Navigate(ctx, ws.s, req.URL, ws.wait()); err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, wdErr(ErrTimeout, "page load timed out")
-		}
-		return nil, err
+		return nil, loadErr(err)
 	}
 	return nil, nil
+}
+
+// loadErr maps a navigation error. A page that opens a user prompt while
+// loading has navigated: the prompt is for the next command to handle.
+func loadErr(err error) error {
+	switch {
+	case errors.Is(err, cdp.ErrDialogOpen):
+		return nil
+	case errors.Is(err, context.DeadlineExceeded):
+		return wdErr(ErrTimeout, "page load timed out")
+	}
+	return err
 }
 
 func evalString(ctx context.Context, tab cdp.Tab, expr string) (string, error) {
@@ -55,65 +65,23 @@ func (h *Handler) title(ctx context.Context, ws *wdSession, _ *http.Request, _ [
 }
 
 func (h *Handler) source(ctx context.Context, ws *wdSession, _ *http.Request, _ []byte) (any, error) {
-	return evalString(ctx, ws.s.Tab, core.RenderedHTML)
+	return evalString(ctx, ws.tab(), core.RenderedHTML)
 }
 
 func (h *Handler) history(delta int) command {
 	return func(ctx context.Context, ws *wdSession, _ *http.Request, _ []byte) (any, error) {
 		ctx, cancel := context.WithTimeout(ctx, time.Duration(ws.getTimeouts().PageLoad)*time.Millisecond)
 		defer cancel()
-		return nil, ws.s.Tab.History(ctx, delta)
+		ws.frames = nil
+		return nil, loadErr(ws.s.Tab.History(ctx, delta))
 	}
 }
 
 func (h *Handler) refresh(ctx context.Context, ws *wdSession, _ *http.Request, _ []byte) (any, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(ws.getTimeouts().PageLoad)*time.Millisecond)
 	defer cancel()
-	return nil, ws.s.Tab.Reload(ctx, ws.wait())
-}
-
-// A WebDriver session is exactly one tab, so it has exactly one window.
-
-func (h *Handler) windowHandle(_ context.Context, ws *wdSession, _ *http.Request, _ []byte) (any, error) {
-	return ws.s.ID, nil
-}
-
-func (h *Handler) windowHandles(_ context.Context, ws *wdSession, _ *http.Request, _ []byte) (any, error) {
-	return []string{ws.s.ID}, nil
-}
-
-func (h *Handler) switchWindow(_ context.Context, ws *wdSession, _ *http.Request, body []byte) (any, error) {
-	var req struct {
-		Handle string `json:"handle"`
-	}
-	if err := decodeBody(body, &req); err != nil {
-		return nil, err
-	}
-	if req.Handle != ws.s.ID {
-		return nil, wdErr(ErrNoSuchWindow, "a Tether session owns exactly one tab ("+ws.s.ID+")")
-	}
-	return nil, nil
-}
-
-func (h *Handler) closeWindow(ctx context.Context, ws *wdSession, _ *http.Request, _ []byte) (any, error) {
-	h.mu.Lock()
-	delete(h.sessions, ws.s.ID)
-	h.mu.Unlock()
-	if err := h.core.Sessions.Close(context.WithoutCancel(ctx), ws.s.ID, true); err != nil {
-		return nil, err
-	}
-	return []string{}, nil
-}
-
-// windowRect reports the window geometry. Resizing a person's real browser
-// window is deliberately not supported, so set/maximize are no-ops that
-// return the current rect (which keeps maximize_window() scripts working).
-func (h *Handler) windowRect(ctx context.Context, ws *wdSession, _ *http.Request, _ []byte) (any, error) {
-	v, err := ws.s.Tab.Evaluate(ctx, `({x: window.screenX, y: window.screenY, width: window.outerWidth, height: window.outerHeight})`, false)
-	if err != nil {
-		return nil, err
-	}
-	return v, nil
+	ws.frames = nil
+	return nil, loadErr(ws.s.Tab.Reload(ctx, ws.wait()))
 }
 
 func (h *Handler) screenshot(ctx context.Context, ws *wdSession, _ *http.Request, _ []byte) (any, error) {
@@ -144,9 +112,12 @@ func (h *Handler) execute(async bool) command {
 			ctx, cancel = context.WithTimeout(ctx, time.Duration(*t)*time.Millisecond)
 			defer cancel()
 		}
-		v, err := runScript(ctx, ws.s.Tab, *req.Script, req.Args, async)
-		if errors.Is(err, context.DeadlineExceeded) {
+		v, err := runScript(ctx, ws.tab(), *req.Script, req.Args, async)
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
 			return nil, wdErr(ErrScriptTimeout, "script did not complete within the script timeout")
+		case errors.Is(err, cdp.ErrDialogOpen):
+			return nil, nil // W3C: a prompt opened by the script ends it with null
 		}
 		return v, err
 	}
@@ -176,8 +147,10 @@ func fromCDP(c cdp.Cookie) wdCookie {
 	return w
 }
 
+// Cookies are those of the current browsing context's document, which in a
+// frame is the frame's.
 func pageCookies(ctx context.Context, ws *wdSession) ([]wdCookie, string, error) {
-	u, err := evalString(ctx, ws.s.Tab, "location.href")
+	u, err := evalString(ctx, ws.tab(), "location.href")
 	if err != nil {
 		return nil, "", err
 	}
@@ -224,7 +197,7 @@ func (h *Handler) addCookie(ctx context.Context, ws *wdSession, _ *http.Request,
 	if req.Cookie == nil || req.Cookie.Name == "" {
 		return nil, wdErr(ErrInvalidArgument, "cookie with a name is required")
 	}
-	u, err := evalString(ctx, ws.s.Tab, "location.href")
+	u, err := evalString(ctx, ws.tab(), "location.href")
 	if err != nil {
 		return nil, err
 	}
@@ -252,7 +225,7 @@ func (h *Handler) addCookie(ctx context.Context, ws *wdSession, _ *http.Request,
 }
 
 func (h *Handler) deleteCookie(ctx context.Context, ws *wdSession, r *http.Request, _ []byte) (any, error) {
-	u, err := evalString(ctx, ws.s.Tab, "location.href")
+	u, err := evalString(ctx, ws.tab(), "location.href")
 	if err != nil {
 		return nil, err
 	}

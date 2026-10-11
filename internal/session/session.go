@@ -268,6 +268,58 @@ func (m *Manager) Create(ctx context.Context) (*Session, error) {
 	return m.create(ctx, "")
 }
 
+// CreateWindow is Create, with the tab in a new browser window of its own.
+func (m *Manager) CreateWindow(ctx context.Context) (*Session, error) {
+	tab, err := m.browser.NewWindow(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("session: open window: %w", err)
+	}
+	s := m.track(tab, "", true, policy.FromContext(ctx))
+	m.log.Info("window opened", "tab", logx.Clean(s.ID), "owner", logx.Clean(s.Owner))
+	return s, nil
+}
+
+// Child tracks a tab that opener's page opened (a popup) as opener's own:
+// same owner, same session rules, owned so it closes with the session.
+// Unlike Get, a non-admin principal may take it, since it is the opener's
+// tab, not the person's. A tab already tracked is returned as Get would.
+func (m *Manager) Child(ctx context.Context, id string, opener *Session) (*Session, error) {
+	if s := m.Lookup(id); s != nil {
+		return m.Get(ctx, id)
+	}
+	if !policy.FromContext(ctx).CanUse(opener.Owner) {
+		return nil, errNotVisible(id)
+	}
+	tab, err := m.browser.AttachTab(ctx, id)
+	if err != nil {
+		if errors.Is(err, cdp.ErrNoSuchTab) {
+			return nil, fmt.Errorf("%w: %s", ErrTabGone, id)
+		}
+		return nil, err
+	}
+	m.mu.Lock()
+	if s := m.byID[id]; s != nil && !s.Closed() { // lost a race; keep the first
+		m.mu.Unlock()
+		return m.Get(ctx, id)
+	}
+	m.mu.Unlock()
+	s := m.track(tab, "", true, opener.owner)
+	s.SetRules(opener.Rules())
+	m.log.Info("popup attached", "tab", logx.Clean(id), "opener", logx.Clean(opener.ID), "owner", logx.Clean(s.Owner))
+	return s, nil
+}
+
+// Lookup returns the live session for a tab ID, or nil. Unlike Get it
+// never adopts a tab.
+func (m *Manager) Lookup(id string) *Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s := m.byID[id]; s != nil && !s.Closed() {
+		return s
+	}
+	return nil
+}
+
 func (m *Manager) create(ctx context.Context, domain string) (*Session, error) {
 	tab, err := m.browser.NewTab(ctx)
 	if err != nil {

@@ -171,6 +171,28 @@ func (c *Core) SetSessionRules(ctx context.Context, s *session.Session, rules po
 	return c.Prepare(ctx, s)
 }
 
+// AdoptPopup takes over a tab that opener's page opened, under opener's
+// owner and session rules. The popup loaded before Tether could guard it,
+// so a popup sitting on a page the rules forbid is closed and refused.
+func (c *Core) AdoptPopup(ctx context.Context, id string, opener *session.Session) (*session.Session, error) {
+	s, err := c.Sessions.Child(ctx, id, opener)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.Prepare(ctx, s); err != nil {
+		return nil, err
+	}
+	info, err := s.Tab.Info(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.checkFinal(ctx, s, info.URL, false); err != nil {
+		_ = c.Sessions.Close(context.WithoutCancel(ctx), s.ID, true)
+		return nil, err
+	}
+	return s, nil
+}
+
 // AllowScripts returns ErrForbidden unless the principal in ctx may run
 // arbitrary JavaScript.
 func AllowScripts(ctx context.Context) error {

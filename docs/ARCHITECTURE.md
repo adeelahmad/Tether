@@ -69,7 +69,14 @@ A **session is exactly one Chrome tab** (a CDP page target), keyed by its
 target ID. That ID is the only handle a client ever needs: it is the
 `X-Tether-Tab-ID` header, the `tether_tab` cookie value, the WebDriver
 session ID, and the path segment in `/tether/v1/tabs/{id}`. A tab opened by
-one face can be driven by any other.
+one face can be driven by any other. (A WebDriver session can grow extra
+windows — new tabs and popups — and each window handle is again a tab ID
+backed by its own session.)
+
+Frames are not sessions: `cdp.Tab.InFrame` gives a view of a tab whose
+script and DOM calls run inside a child frame, same-process or
+out-of-process (cross-site frames are auto-attached as CDP sessions of the
+tab), while navigation, input and screenshots stay with the tab.
 
 Resolution precedence for proxy requests:
 

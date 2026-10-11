@@ -19,6 +19,13 @@ type chromeTab struct {
 	id      string
 	session string
 
+	mu         sync.Mutex
+	children   map[string]string // out-of-process iframe target ID → CDP session
+	sessions   map[string]bool   // this tab's session and its iframes'
+	dialog     *Dialog
+	dialogOn   string        // session the open dialog belongs to
+	dialogCh   chan struct{} // closed when a dialog opens
+	unsub      func()
 	guardMu    sync.Mutex // serialises Guard calls
 	guardCheck atomic.Pointer[func(string) error]
 	guardUnsub func()
@@ -28,7 +35,14 @@ type chromeTab struct {
 var _ Tab = (*chromeTab)(nil)
 
 func newTab(b *Chrome, id, session string) *chromeTab {
-	return &chromeTab{b: b, id: id, session: session}
+	t := &chromeTab{
+		b: b, id: id, session: session,
+		children: map[string]string{},
+		sessions: map[string]bool{session: true},
+		dialogCh: make(chan struct{}),
+	}
+	t.unsub = b.c.subscribe("", t.onEvent)
+	return t
 }
 
 func (t *chromeTab) ID() string { return t.id }
@@ -228,7 +242,7 @@ func (t *chromeTab) Navigate(ctx context.Context, url string, wait Wait) (*Docum
 		// Same-document navigation (fragment change): nothing to wait for.
 		return &Document{URL: url, Status: http.StatusOK, Header: http.Header{}}, nil
 	}
-	if err := w.wait(ctx, wait); err != nil {
+	if err := t.guard(ctx, func(ctx context.Context) error { return w.wait(ctx, wait) }); err != nil {
 		return nil, err
 	}
 	w.mu.Lock()
@@ -251,7 +265,7 @@ func (t *chromeTab) Reload(ctx context.Context, wait Wait) error {
 	if err := t.call(ctx, "Page.reload", nil, nil); err != nil {
 		return err
 	}
-	return w.wait(ctx, wait)
+	return t.guard(ctx, func(ctx context.Context) error { return w.wait(ctx, wait) })
 }
 
 // History moves through session history (delta -1 = back, +1 = forward).
@@ -277,12 +291,14 @@ func (t *chromeTab) History(ctx context.Context, delta int) error {
 	if err := t.call(ctx, "Page.navigateToHistoryEntry", map[string]any{"entryId": h.Entries[idx].ID}, nil); err != nil {
 		return err
 	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-w.navigated:
-	}
-	return t.waitReady(ctx)
+	return t.guard(ctx, func(ctx context.Context) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-w.navigated:
+		}
+		return t.waitReady(ctx)
+	})
 }
 
 func (t *chromeTab) waitReady(ctx context.Context) error {
@@ -339,90 +355,6 @@ func (e *exceptionDetails) message() string {
 	return e.Text
 }
 
-func (t *chromeTab) Evaluate(ctx context.Context, expr string, awaitPromise bool) (json.RawMessage, error) {
-	var res struct {
-		Result           remoteObject      `json:"result"`
-		ExceptionDetails *exceptionDetails `json:"exceptionDetails"`
-	}
-	err := t.call(ctx, "Runtime.evaluate", map[string]any{
-		"expression":    expr,
-		"returnByValue": true,
-		"awaitPromise":  awaitPromise,
-		"userGesture":   true,
-	}, &res)
-	if err != nil {
-		return nil, err
-	}
-	if err := res.ExceptionDetails.err(); err != nil {
-		return nil, err
-	}
-	return res.Result.toRemote().Value, nil
-}
-
-func (t *chromeTab) CallFunction(ctx context.Context, decl string, opts CallOptions) (*Remote, error) {
-	this := opts.This
-	if this == "" {
-		var g struct {
-			Result remoteObject `json:"result"`
-		}
-		if err := t.call(ctx, "Runtime.evaluate", map[string]any{"expression": "globalThis"}, &g); err != nil {
-			return nil, err
-		}
-		this = g.Result.ObjectID
-		defer func() { _ = t.Release(context.WithoutCancel(ctx), this) }()
-	}
-	args := make([]map[string]any, len(opts.Args))
-	for i, a := range opts.Args {
-		if a.ObjectID != "" {
-			args[i] = map[string]any{"objectId": a.ObjectID}
-		} else {
-			args[i] = map[string]any{"value": a.Value}
-		}
-	}
-	var res struct {
-		Result           remoteObject      `json:"result"`
-		ExceptionDetails *exceptionDetails `json:"exceptionDetails"`
-	}
-	err := t.call(ctx, "Runtime.callFunctionOn", map[string]any{
-		"functionDeclaration": decl,
-		"objectId":            this,
-		"arguments":           args,
-		"returnByValue":       opts.ByValue,
-		"awaitPromise":        opts.Await,
-		"userGesture":         true,
-	}, &res)
-	if err != nil {
-		return nil, err
-	}
-	if err := res.ExceptionDetails.err(); err != nil {
-		return nil, err
-	}
-	return res.Result.toRemote(), nil
-}
-
-func (t *chromeTab) Properties(ctx context.Context, objectID string) ([]Property, error) {
-	var res struct {
-		Result []struct {
-			Name  string        `json:"name"`
-			Value *remoteObject `json:"value"`
-		} `json:"result"`
-	}
-	if err := t.call(ctx, "Runtime.getProperties", map[string]any{
-		"objectId":      objectID,
-		"ownProperties": true,
-	}, &res); err != nil {
-		return nil, err
-	}
-	out := make([]Property, 0, len(res.Result))
-	for _, p := range res.Result {
-		if p.Value == nil {
-			continue
-		}
-		out = append(out, Property{Name: p.Name, Value: p.Value.toRemote()})
-	}
-	return out, nil
-}
-
 // ArrayItems returns the elements of a remote array, in index order.
 func ArrayItems(ctx context.Context, t Tab, objectID string) ([]*Remote, error) {
 	props, err := t.Properties(ctx, objectID)
@@ -447,35 +379,6 @@ func ArrayItems(ctx context.Context, t Tab, objectID string) ([]*Remote, error) 
 		out[i] = it.r
 	}
 	return out, nil
-}
-
-func (t *chromeTab) Release(ctx context.Context, objectID string) error {
-	if objectID == "" {
-		return nil
-	}
-	return t.call(ctx, "Runtime.releaseObject", map[string]any{"objectId": objectID}, nil)
-}
-
-func (t *chromeTab) NodeID(ctx context.Context, objectID string) (int, error) {
-	var res struct {
-		Node struct {
-			BackendNodeID int `json:"backendNodeId"`
-		} `json:"node"`
-	}
-	if err := t.call(ctx, "DOM.describeNode", map[string]any{"objectId": objectID}, &res); err != nil {
-		return 0, err
-	}
-	return res.Node.BackendNodeID, nil
-}
-
-func (t *chromeTab) ResolveNode(ctx context.Context, backendNodeID int) (string, error) {
-	var res struct {
-		Object remoteObject `json:"object"`
-	}
-	if err := t.call(ctx, "DOM.resolveNode", map[string]any{"backendNodeId": backendNodeID}, &res); err != nil {
-		return "", err
-	}
-	return res.Object.ObjectID, nil
 }
 
 func (t *chromeTab) ResponseBody(ctx context.Context, requestID string) ([]byte, error) {
@@ -543,22 +446,38 @@ func (t *chromeTab) DeleteCookie(ctx context.Context, name, url string) error {
 	return t.call(ctx, "Network.deleteCookies", map[string]any{"name": name, "url": url}, nil)
 }
 
+// Click and Key return ErrDialogOpen when the input opened a dialog:
+// Chrome does not acknowledge the event until the dialog is answered.
 func (t *chromeTab) Click(ctx context.Context, x, y float64) error {
-	for _, typ := range []string{"mouseMoved", "mousePressed", "mouseReleased"} {
-		p := map[string]any{"type": typ, "x": x, "y": y}
-		if typ != "mouseMoved" {
-			p["button"] = "left"
-			p["clickCount"] = 1
+	return t.guard(ctx, func(ctx context.Context) error {
+		for _, typ := range []string{"mouseMoved", "mousePressed", "mouseReleased"} {
+			p := map[string]any{"type": typ, "x": x, "y": y}
+			if typ != "mouseMoved" {
+				p["button"] = "left"
+				p["clickCount"] = 1
+			}
+			if err := t.call(ctx, "Input.dispatchMouseEvent", p, nil); err != nil {
+				return err
+			}
 		}
-		if err := t.call(ctx, "Input.dispatchMouseEvent", p, nil); err != nil {
-			return err
-		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func (t *chromeTab) Key(ctx context.Context, k KeyEvent) error {
-	return t.call(ctx, "Input.dispatchKeyEvent", k, nil)
+	return t.guard(ctx, func(ctx context.Context) error {
+		return t.call(ctx, "Input.dispatchKeyEvent", k, nil)
+	})
+}
+
+func (t *chromeTab) PrintPDF(ctx context.Context, opts PDFOptions) ([]byte, error) {
+	var res struct {
+		Data []byte `json:"data"` // base64 in JSON
+	}
+	if err := t.call(ctx, "Page.printToPDF", opts, &res); err != nil {
+		return nil, err
+	}
+	return res.Data, nil
 }
 
 func (t *chromeTab) Mouse(ctx context.Context, m MouseEvent) error {

@@ -80,3 +80,47 @@ func TestSessionPolicyCapability(t *testing.T) {
 		t.Fatalf("bad policy: %d %v", code, out)
 	}
 }
+
+// Popups and new windows belong to the session: same owner, same session
+// rules, so a restricted session cannot leave its allowlist through them.
+func TestPopupsAndNewWindowsInheritPolicy(t *testing.T) {
+	h, b, _ := newHandler(t)
+	agent := &policy.Principal{Name: "agent"}
+	_, out := doAs(t, h, agent, "POST", "/session", map[string]any{"capabilities": map[string]any{"alwaysMatch": map[string]any{
+		"tether:options": map[string]any{"policy": map[string]any{"allow": []string{"example.com"}}},
+	}}})
+	sid := out["value"].(map[string]any)["sessionId"].(string)
+
+	b.AddPopup("GOOD", "https://www.example.com/p", sid)
+	b.AddPopup("BAD", "https://evil.test/", sid)
+	if code, out := doAs(t, h, agent, "POST", "/session/"+sid+"/window", map[string]any{"handle": "GOOD"}); code != 200 {
+		t.Fatalf("switch to allowed popup (a non-admin token may take its own popups): %d %v", code, out)
+	}
+	good, _ := b.AttachTab(context.Background(), "GOOD")
+	if !good.(*cdptest.Tab).Guarded() {
+		t.Fatal("popup is not guarded by the session rules")
+	}
+	if code, out := doAs(t, h, agent, "POST", "/session/"+sid+"/url", map[string]any{"url": "https://evil.test/"}); code == 200 {
+		t.Fatalf("popup navigated outside session rules: %v", out)
+	}
+
+	doAs(t, h, agent, "POST", "/session/"+sid+"/window", map[string]any{"handle": sid})
+	if code, out := doAs(t, h, agent, "POST", "/session/"+sid+"/window", map[string]any{"handle": "BAD"}); code == 200 {
+		t.Fatalf("switched to a popup on a forbidden site: %v", out)
+	}
+	for _, id := range b.Open() {
+		if id == "BAD" {
+			t.Fatal("forbidden popup left open")
+		}
+	}
+
+	_, out = doAs(t, h, agent, "POST", "/session/"+sid+"/window/new", map[string]any{})
+	nw := out["value"].(map[string]any)["handle"].(string)
+	doAs(t, h, agent, "POST", "/session/"+sid+"/window", map[string]any{"handle": nw})
+	if code, out := doAs(t, h, agent, "POST", "/session/"+sid+"/url", map[string]any{"url": "https://evil.test/"}); code == 200 {
+		t.Fatalf("new window navigated outside session rules: %v", out)
+	}
+	if code, out := doAs(t, h, agent, "POST", "/session/"+sid+"/url", map[string]any{"url": "https://example.com/"}); code != 200 {
+		t.Fatalf("new window: %d %v", code, out)
+	}
+}

@@ -215,6 +215,28 @@ func (m *Manager) Create(ctx context.Context) (*Session, error) {
 	return m.create(ctx, "")
 }
 
+// CreateWindow is Create, with the tab in a new browser window of its own.
+func (m *Manager) CreateWindow(ctx context.Context) (*Session, error) {
+	tab, err := m.browser.NewWindow(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("session: open window: %w", err)
+	}
+	s := m.track(tab, "", true)
+	m.log.Info("window opened", "tab", logx.Clean(s.ID))
+	return s, nil
+}
+
+// Lookup returns the live session for a tab ID, or nil. Unlike Get it
+// never adopts a tab.
+func (m *Manager) Lookup(id string) *Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s := m.byID[id]; s != nil && !s.Closed() {
+		return s
+	}
+	return nil
+}
+
 func (m *Manager) create(ctx context.Context, domain string) (*Session, error) {
 	tab, err := m.browser.NewTab(ctx)
 	if err != nil {

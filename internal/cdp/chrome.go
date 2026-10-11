@@ -76,14 +76,20 @@ func (b *Chrome) Version(ctx context.Context) (string, error) {
 
 // NewTab implements Browser. Tabs open in the background so Tether never
 // steals focus from the person using the browser.
-func (b *Chrome) NewTab(ctx context.Context) (Tab, error) {
+func (b *Chrome) NewTab(ctx context.Context) (Tab, error) { return b.newTarget(ctx, false) }
+
+// NewWindow implements Browser.
+func (b *Chrome) NewWindow(ctx context.Context) (Tab, error) { return b.newTarget(ctx, true) }
+
+func (b *Chrome) newTarget(ctx context.Context, newWindow bool) (Tab, error) {
 	var res struct {
 		TargetID string `json:"targetId"`
 	}
-	err := b.c.call(ctx, "", "Target.createTarget", map[string]any{
-		"url":        "about:blank",
-		"background": true,
-	}, &res)
+	params := map[string]any{"url": "about:blank", "background": true}
+	if newWindow {
+		params["newWindow"] = true
+	}
+	err := b.c.call(ctx, "", "Target.createTarget", params, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -124,8 +130,21 @@ func (b *Chrome) attach(ctx context.Context, id string) (*chromeTab, error) {
 	t := newTab(b, id, res.SessionID)
 	for _, m := range []string{"Page.enable", "Network.enable"} {
 		if err := t.call(ctx, m, nil, nil); err != nil {
+			t.stop()
 			return nil, err
 		}
+	}
+	// Tether's tabs live in the background. Emulating focus makes Chrome
+	// route input to them (and into their cross-site iframes) promptly,
+	// as it does for the active tab, without stealing the person's focus.
+	if err := t.call(ctx, "Emulation.setFocusEmulationEnabled", map[string]any{"enabled": true}, nil); err != nil {
+		b.log.Debug("focus emulation unavailable", "err", err)
+	}
+	// Out-of-process (cross-site) iframes are separate targets; attach to
+	// them so frames work regardless of process. Best effort: without it
+	// only same-process frames can be entered.
+	if err := t.call(ctx, "Target.setAutoAttach", autoAttachParams, nil); err != nil {
+		b.log.Debug("auto-attach to iframes unavailable", "err", err)
 	}
 	return t, nil
 }
@@ -147,6 +166,7 @@ func (b *Chrome) Tabs(ctx context.Context) ([]TabInfo, error) {
 			Type     string `json:"type"`
 			Title    string `json:"title"`
 			URL      string `json:"url"`
+			OpenerID string `json:"openerId"`
 		} `json:"targetInfos"`
 	}
 	if err := b.c.call(ctx, "", "Target.getTargets", nil, &res); err != nil {
@@ -155,10 +175,67 @@ func (b *Chrome) Tabs(ctx context.Context) ([]TabInfo, error) {
 	var out []TabInfo
 	for _, t := range res.TargetInfos {
 		if t.Type == "page" {
-			out = append(out, TabInfo{ID: t.TargetID, URL: t.URL, Title: t.Title})
+			out = append(out, TabInfo{ID: t.TargetID, URL: t.URL, Title: t.Title, OpenerID: t.OpenerID})
 		}
 	}
 	return out, nil
+}
+
+// Window implements Browser.
+func (b *Chrome) Window(ctx context.Context, tabID string) (Window, error) {
+	var res struct {
+		WindowID int    `json:"windowId"`
+		Bounds   Window `json:"bounds"`
+	}
+	if err := b.c.call(ctx, "", "Browser.getWindowForTarget", map[string]any{"targetId": tabID}, &res); err != nil {
+		return Window{}, err
+	}
+	w := res.Bounds
+	w.ID = res.WindowID
+	return w, nil
+}
+
+// SetWindow implements Browser. Chrome only resizes a window in the
+// normal state, so a maximised, minimised or fullscreen window is
+// restored first.
+func (b *Chrome) SetWindow(ctx context.Context, tabID string, wb WindowBounds) (Window, error) {
+	w, err := b.Window(ctx, tabID)
+	if err != nil {
+		return Window{}, err
+	}
+	set := func(bounds map[string]any) error {
+		return b.c.call(ctx, "", "Browser.setWindowBounds", map[string]any{"windowId": w.ID, "bounds": bounds}, nil)
+	}
+	if wb.State != "" && wb.State != "normal" {
+		if w.State != wb.State {
+			if w.State != "normal" {
+				if err := set(map[string]any{"windowState": "normal"}); err != nil {
+					return Window{}, err
+				}
+			}
+			if err := set(map[string]any{"windowState": wb.State}); err != nil {
+				return Window{}, err
+			}
+		}
+		return b.Window(ctx, tabID)
+	}
+	if w.State != "normal" {
+		if err := set(map[string]any{"windowState": "normal"}); err != nil {
+			return Window{}, err
+		}
+	}
+	bounds := map[string]any{}
+	for k, v := range map[string]*int{"left": wb.Left, "top": wb.Top, "width": wb.Width, "height": wb.Height} {
+		if v != nil {
+			bounds[k] = *v
+		}
+	}
+	if len(bounds) > 0 {
+		if err := set(bounds); err != nil {
+			return Window{}, err
+		}
+	}
+	return b.Window(ctx, tabID)
 }
 
 // Quit asks Chrome itself to exit. Only for browsers Tether launched.

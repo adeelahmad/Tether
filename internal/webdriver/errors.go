@@ -19,14 +19,19 @@ const (
 	ErrInvalidSelector         = "invalid selector"
 	ErrInvalidSessionID        = "invalid session id"
 	ErrJavaScript              = "javascript error"
+	ErrDetachedShadowRoot      = "detached shadow root"
+	ErrNoSuchAlert             = "no such alert"
 	ErrNoSuchCookie            = "no such cookie"
 	ErrNoSuchElement           = "no such element"
+	ErrNoSuchFrame             = "no such frame"
+	ErrNoSuchShadowRoot        = "no such shadow root"
 	ErrNoSuchWindow            = "no such window"
 	ErrScriptTimeout           = "script timeout"
 	ErrSessionNotCreated       = "session not created"
 	ErrStaleElement            = "stale element reference"
 	ErrTimeout                 = "timeout"
 	ErrUnableToSetCookie       = "unable to set cookie"
+	ErrUnexpectedAlertOpen     = "unexpected alert open"
 	ErrUnknownCommand          = "unknown command"
 	ErrUnknownError            = "unknown error"
 	ErrUnsupportedOperation    = "unsupported operation"
@@ -39,14 +44,19 @@ var statusFor = map[string]int{
 	ErrInvalidSelector:         http.StatusBadRequest,
 	ErrInvalidSessionID:        http.StatusNotFound,
 	ErrJavaScript:              http.StatusInternalServerError,
+	ErrDetachedShadowRoot:      http.StatusNotFound,
+	ErrNoSuchAlert:             http.StatusNotFound,
 	ErrNoSuchCookie:            http.StatusNotFound,
 	ErrNoSuchElement:           http.StatusNotFound,
+	ErrNoSuchFrame:             http.StatusNotFound,
+	ErrNoSuchShadowRoot:        http.StatusNotFound,
 	ErrNoSuchWindow:            http.StatusNotFound,
 	ErrScriptTimeout:           http.StatusInternalServerError,
 	ErrSessionNotCreated:       http.StatusInternalServerError,
 	ErrStaleElement:            http.StatusNotFound,
 	ErrTimeout:                 http.StatusInternalServerError,
 	ErrUnableToSetCookie:       http.StatusInternalServerError,
+	ErrUnexpectedAlertOpen:     http.StatusInternalServerError,
 	ErrUnknownCommand:          http.StatusNotFound,
 	ErrUnknownError:            http.StatusInternalServerError,
 	ErrUnsupportedOperation:    http.StatusInternalServerError,
@@ -56,6 +66,7 @@ var statusFor = map[string]int{
 type Error struct {
 	Code    string
 	Message string
+	Data    map[string]any // optional, e.g. the text of an unexpected alert
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }
@@ -72,6 +83,10 @@ func toError(err error) *Error {
 		return we
 	case errors.Is(err, session.ErrTabGone), errors.Is(err, cdp.ErrNoSuchTab):
 		return wdErr(ErrNoSuchWindow, "the tab was closed: "+err.Error())
+	case errors.Is(err, cdp.ErrNoSuchFrame):
+		return wdErr(ErrNoSuchWindow, "the current frame is gone; switch to another frame: "+err.Error())
+	case errors.Is(err, cdp.ErrDialogOpen):
+		return wdErr(ErrUnexpectedAlertOpen, "a user prompt is open")
 	case cdp.IsStaleObject(err):
 		return wdErr(ErrStaleElement, "element is no longer attached to the page")
 	case errors.As(err, &js):
@@ -101,5 +116,9 @@ func writeError(w http.ResponseWriter, err error) {
 	if !ok {
 		status = http.StatusInternalServerError
 	}
-	writeValue(w, status, map[string]any{"error": e.Code, "message": e.Message, "stacktrace": ""})
+	v := map[string]any{"error": e.Code, "message": e.Message, "stacktrace": ""}
+	if e.Data != nil {
+		v["data"] = e.Data
+	}
+	writeValue(w, status, v)
 }

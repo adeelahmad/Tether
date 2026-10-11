@@ -195,7 +195,7 @@ local CA, and it only drives Chromium-family browsers.
 | Uses your real logged-in profile | ✅ | ✅ | ❌ (re-login, stored creds) | ❌ |
 | Needs a browser extension | **No** | Yes | No | No |
 | Plain HTTP proxy (curl, any language) | ✅ | ❌ | Rarely | ❌ |
-| W3C WebDriver / Selenium | ✅ common set | ❌ | Often | ✅ |
+| W3C WebDriver / Selenium | ✅ incl. frames, alerts, windows, uploads, PDF | ❌ | Often | ✅ |
 | MCP for agents | Planned | Often | Often | Via wrappers |
 | Runs entirely on your machine | ✅ | ✅ | ❌ | ✅ |
 | Remote access | Tailscale + token | Usually local only | ✅ | DIY |

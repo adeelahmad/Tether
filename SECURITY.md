@@ -66,6 +66,8 @@ trusted to use the browser. Tether is not a multi-tenant isolation layer.
 | An agent/script navigates somewhere it shouldn't | `--allow-domains` policy enforced for every face | Allowlist is per-instance today; per-session/agent policies are the planned extension. |
 | Tether used to read a page the user has open | Only tabs Tether opened, or tabs explicitly addressed by ID, are driven | Any authenticated client can address any tab by ID. |
 | Chrome DevTools port exposed | `--launch` binds it to loopback; Tether never re-exposes it | If you start Chrome yourself with `--remote-debugging-address=0.0.0.0`, that is outside Tether's control. |
+| A client attaches local files to a page (WebDriver file inputs) | Clients are fully trusted (see above); remote uploads land in a per-session temp dir deleted when the session ends | A token holder can make a page upload any file the Tether user can read. |
+| Automation rearranges the person's screen | Window resize/maximise/minimise/fullscreen only act on windows holding nothing but Tether tabs | — |
 | Denial of service (huge bodies, many tabs) | 32 MiB request body cap; per-tab serialisation; idle reaping | A token holder can open many tabs. |
 
 **Out of scope.** Protecting the user from sites they are logged in to, from

@@ -9,7 +9,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
     -ldflags "-s -w -X github.com/adeelahmad/tether/internal/version.Version=${VERSION}" \
     -o /out/tether ./cmd/tether
 
-FROM alpine:3.22
+FROM alpine:3.24
 RUN apk add --no-cache chromium ca-certificates font-noto tini \
  && adduser -D -h /home/tether tether \
  && mkdir -p /data && chown tether:tether /data

@@ -22,3 +22,5 @@ Thumbs.db
 # Go workspaces
 go.work
 go.work.sum
+/site/
+__pycache__/

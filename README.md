@@ -10,6 +10,7 @@ One self-contained binary. Speaks MCP, plain HTTP proxy and WebDriver. Drives Ch
 [![CI](https://github.com/adeelahmad/tether/actions/workflows/ci.yml/badge.svg)](https://github.com/adeelahmad/tether/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/adeelahmad/tether)](https://goreportcard.com/report/github.com/adeelahmad/tether)
 [![Latest release](https://img.shields.io/github/v/release/adeelahmad/tether?sort=semver)](https://github.com/adeelahmad/tether/releases)
+[![Docs](https://img.shields.io/badge/docs-adeelahmad.github.io%2FTether-blue)](https://adeelahmad.github.io/Tether/)
 [![License: GPL v3](https://img.shields.io/github/license/adeelahmad/tether)](LICENSE)
 
 <img src="docs/demo.gif" alt="Tether driving a real Chrome tab: curl through the proxy returns a logged-in page" width="760"/>

@@ -19,7 +19,7 @@ GO       ?= go
 GOLANGCI ?= golangci-lint
 
 .DEFAULT_GOAL := build
-.PHONY: help build run test test-integration lint fmt vet tidy cover clean cross vuln check
+.PHONY: help build run test test-integration lint fmt vet tidy cover clean cross vuln check docs docs-serve
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -68,5 +68,11 @@ cross: ## Static release builds for all platforms into ./dist
 			-o $(DIST)/$(BINARY)_$${os}_$${arch}$$ext $(CMD) || exit 1; \
 	done
 
+docs: ## Build the docs site into ./site (pip install -r website/requirements.txt)
+	mkdocs build --strict
+
+docs-serve: ## Preview the docs site at http://127.0.0.1:8000
+	mkdocs serve
+
 clean: ## Remove build output
-	rm -rf bin $(DIST) coverage.out
+	rm -rf bin $(DIST) coverage.out site

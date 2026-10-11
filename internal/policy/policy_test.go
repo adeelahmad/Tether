@@ -226,3 +226,25 @@ func TestExamplePolicyFile(t *testing.T) {
 		t.Fatalf("%+v", l)
 	}
 }
+
+func TestLoadFileTOML(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "policy.toml")
+	body := "allow = [\"example.com\"]\n[[tokens]]\nname = \"agent\"\ntoken = \"agent-token-0123456789\"\nscripts = false\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := LoadFile(p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Global.Allow[0] != "example.com" || len(l.Credentials) != 1 || l.Credentials[0].Principal.Scripts {
+		t.Fatalf("%+v", l)
+	}
+	if err := os.WriteFile(p, []byte("alow = []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFile(p, nil); err == nil {
+		t.Fatal("unknown key accepted")
+	}
+}

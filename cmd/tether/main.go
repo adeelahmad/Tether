@@ -89,6 +89,7 @@ func serve(args []string, stdout, stderr io.Writer) int {
 		"browser", a.Browser,
 		"auth", cfg.HasAuth(),
 		"ca", a.CAPath,
+		"config", cfg.ConfigFile,
 	)
 	fmt.Fprintf(stdout, "\n  Tether %s is serving %s on http://%s\n", version.Version, a.Browser, a.Addr)
 	fmt.Fprintf(stdout, "  Proxy:     curl -x http://%s --cacert <(curl -s http://%s/tether/v1/ca.pem) https://example.com\n", a.Addr, a.Addr)

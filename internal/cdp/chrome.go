@@ -20,6 +20,7 @@ type Chrome struct {
 	closed    bool
 	logSize   int
 	logUnsubs map[string]logSub // by CDP session ID
+	headers   map[string]string
 }
 
 type logSub struct {
@@ -54,6 +55,24 @@ func (b *Chrome) SetLogBuffer(n int) {
 	b.mu.Lock()
 	b.logSize = n
 	b.mu.Unlock()
+}
+
+// SetExtraHeaders sets HTTP headers that every tab attached from now on
+// sends with each request it makes (Network.setExtraHTTPHeaders). Nil or
+// empty sends none.
+func (b *Chrome) SetExtraHeaders(h map[string]string) {
+	b.mu.Lock()
+	b.headers = h
+	b.mu.Unlock()
+}
+
+// SetCookies stores cookies in the browser's cookie jar, as if a site had
+// set them. Each cookie needs a URL or a Domain.
+func (b *Chrome) SetCookies(ctx context.Context, cookies []Cookie) error {
+	if len(cookies) == 0 {
+		return nil
+	}
+	return b.c.call(ctx, "", "Storage.setCookies", map[string]any{"cookies": cookies}, nil)
 }
 
 func (b *Chrome) onEvent(e Event) {
@@ -186,12 +205,20 @@ func (b *Chrome) attach(ctx context.Context, id string) (*chromeTab, error) {
 		b.logUnsubs[res.SessionID] = logSub{target: id, cancel: b.c.subscribe(res.SessionID, t.logs.handle)}
 		domains = append(domains, "Runtime.enable", "Log.enable")
 	}
+	headers := b.headers
 	b.mu.Unlock()
 	for _, m := range domains {
 		if err := t.call(ctx, m, nil, nil); err != nil {
 			b.dropLogs(res.SessionID)
 			t.stop()
 			return nil, err
+		}
+	}
+	if len(headers) > 0 {
+		if err := t.call(ctx, "Network.setExtraHTTPHeaders", map[string]any{"headers": headers}, nil); err != nil {
+			b.dropLogs(res.SessionID)
+			t.stop()
+			return nil, fmt.Errorf("setting extra headers: %w", err)
 		}
 	}
 	// Tether's tabs live in the background. Emulating focus makes Chrome

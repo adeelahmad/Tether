@@ -54,6 +54,9 @@ type Proxy struct {
 	core *core.Core
 	ca   *certs.Authority
 	log  *slog.Logger
+	// StripHeaders are client request headers dropped before a request
+	// is replayed in the browser. Set before serving.
+	StripHeaders []string
 }
 
 var _ core.Face = (*Proxy)(nil)
@@ -124,6 +127,9 @@ func (p *Proxy) serveTarget(w http.ResponseWriter, r *http.Request, target *url.
 		hints.CookieTabID = c.Value
 	}
 	StripSessionCookie(r.Header)
+	for _, h := range p.StripHeaders {
+		r.Header.Del(h)
+	}
 
 	s, src, err := p.core.Sessions.Resolve(ctx, hints)
 	if err != nil {

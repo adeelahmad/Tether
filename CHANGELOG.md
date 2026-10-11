@@ -16,6 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TOML config file (`--config`, `$TETHER_CONFIG`, or
+  `~/.config/tether/config.toml` when present; see `docs/CONFIG.md` and
+  `tether.example.toml`). Precedence is flag > environment > file > default.
+  It covers binding, auth (including `[[auth.tokens]]`, folding in the policy
+  file), allow/deny lists, console capture, the MCP and remote faces, and adds:
+  `[headers]` (headers Chrome sends from Tether's tabs, and client headers the
+  proxy strips), `[[cookies]]` seeded into the browser at startup, and
+  `[chrome].profile` / `--chrome-profile` to launch a specific profile.
+- MCP OAuth (`[mcp.oauth]`, `--mcp-oauth`): a built-in OAuth 2.1
+  authorization server with metadata discovery, dynamic client registration,
+  PKCE and refresh tokens, so OAuth-only MCP clients can connect. The consent
+  page asks for a Tether token and the client acts as it; OAuth tokens open
+  `/mcp` only. `--public-url` sets the issuer.
+- `--policy-file` also accepts TOML (`.toml`).
+
 - Per-token and per-session domain policies (`docs/POLICIES.md`): a
   `--policy-file` defines named tokens, each with allow/deny rules, an
   `admin` flag and a `scripts` permission; `--deny-domains` adds a global

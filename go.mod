@@ -3,6 +3,7 @@ module github.com/adeelahmad/tether
 go 1.23.0
 
 require (
+	github.com/BurntSushi/toml v1.4.0
 	github.com/coder/websocket v1.8.13
 	github.com/go-rod/rod v0.116.2
 	github.com/snail007/goproxy v0.0.0-20250609063252-e6d6a821db80

@@ -6,10 +6,10 @@ import (
 	"encoding/hex"
 	"html/template"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
+	"github.com/adeelahmad/tether/internal/httpx"
 	"github.com/adeelahmad/tether/internal/policy"
 )
 
@@ -87,7 +87,7 @@ func uiGate(a *authenticator, prefix string, w http.ResponseWriter, r *http.Requ
 		}
 		http.SetCookie(w, &http.Cookie{
 			Name: UICookieName, Value: "", Path: prefix, MaxAge: -1,
-			HttpOnly: true, Secure: isHTTPS(r), SameSite: http.SameSiteStrictMode,
+			HttpOnly: true, Secure: httpx.IsHTTPS(r), SameSite: http.SameSiteStrictMode,
 		})
 		http.Redirect(w, r, prefix+"/login", http.StatusSeeOther)
 		return
@@ -120,7 +120,7 @@ func (a *authenticator) login(prefix string, w http.ResponseWriter, r *http.Requ
 		}
 		writeLoginPage(w, http.StatusOK, "")
 	case http.MethodPost:
-		if !sameOrigin(r) {
+		if !httpx.SameOrigin(r) {
 			writeLoginPage(w, http.StatusForbidden, "Cross-site login refused.")
 			return
 		}
@@ -142,7 +142,7 @@ func (a *authenticator) login(prefix string, w http.ResponseWriter, r *http.Requ
 			Path:     prefix,
 			MaxAge:   int((30 * 24 * time.Hour).Seconds()),
 			HttpOnly: true,
-			Secure:   isHTTPS(r),
+			Secure:   httpx.IsHTTPS(r),
 			SameSite: http.SameSiteStrictMode,
 		})
 		http.Redirect(w, r, prefix+"/", http.StatusSeeOther)
@@ -150,35 +150,6 @@ func (a *authenticator) login(prefix string, w http.ResponseWriter, r *http.Requ
 		w.Header().Set("Allow", "GET, POST")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
-}
-
-// isHTTPS reports whether the browser reached us over HTTPS, directly or
-// through a TLS-terminating proxy such as `tailscale serve`. Cookies are
-// only marked Secure then: Tether usually serves plain HTTP on loopback or
-// a tailnet, where browsers refuse to store Secure cookies at all.
-func isHTTPS(r *http.Request) bool {
-	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
-}
-
-// sameOrigin reports whether a form post came from a page on this server
-// (directly or via a reverse proxy that forwards the host). Modern browsers
-// say so in Sec-Fetch-Site; otherwise the Origin must match. A request with
-// neither (curl, very old browsers) cannot be a cross-site form post from a
-// modern browser.
-func sameOrigin(r *http.Request) bool {
-	if sf := r.Header.Get("Sec-Fetch-Site"); sf != "" {
-		return sf == "same-origin" || sf == "none"
-	}
-	o := r.Header.Get("Origin")
-	if o == "" || o == "null" {
-		return o == ""
-	}
-	u, err := url.Parse(o)
-	if err != nil {
-		return false
-	}
-	return strings.EqualFold(u.Host, r.Host) ||
-		(r.Header.Get("X-Forwarded-Host") != "" && strings.EqualFold(u.Host, r.Header.Get("X-Forwarded-Host")))
 }
 
 var loginPage = template.Must(template.New("login").Parse(`<!doctype html>

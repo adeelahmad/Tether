@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
 // MinTokenLen is the shortest token Tether accepts.
@@ -23,7 +25,8 @@ type Credential struct {
 	Principal *Principal
 }
 
-// File is the on-disk policy file (--policy-file), JSON:
+// File is the on-disk policy file (--policy-file): JSON, or TOML when the
+// file name ends in .toml (the same keys). In JSON:
 //
 //	{
 //	  "allow": ["example.com"],           // global rules, merged with
@@ -35,22 +38,22 @@ type Credential struct {
 //	  ]
 //	}
 type File struct {
-	Allow  []string    `json:"allow"`
-	Deny   []string    `json:"deny"`
-	Tokens []TokenSpec `json:"tokens"`
+	Allow  []string    `json:"allow" toml:"allow"`
+	Deny   []string    `json:"deny" toml:"deny"`
+	Tokens []TokenSpec `json:"tokens" toml:"tokens"`
 }
 
 // TokenSpec defines one token. Exactly one of Token, TokenEnv and
 // TokenFile supplies the secret; TokenFile is relative to the policy file.
 type TokenSpec struct {
-	Name      string   `json:"name"`
-	Token     string   `json:"token"`
-	TokenEnv  string   `json:"token_env"`
-	TokenFile string   `json:"token_file"`
-	Admin     bool     `json:"admin"`
-	Scripts   *bool    `json:"scripts"` // default true
-	Allow     []string `json:"allow"`
-	Deny      []string `json:"deny"`
+	Name      string   `json:"name" toml:"name"`
+	Token     string   `json:"token" toml:"token"`
+	TokenEnv  string   `json:"token_env" toml:"token_env"`
+	TokenFile string   `json:"token_file" toml:"token_file"`
+	Admin     bool     `json:"admin" toml:"admin"`
+	Scripts   *bool    `json:"scripts" toml:"scripts"` // default true
+	Allow     []string `json:"allow" toml:"allow"`
+	Deny      []string `json:"deny" toml:"deny"`
 }
 
 // Loaded is a resolved policy file.
@@ -69,10 +72,20 @@ func LoadFile(path string, env func(string) (string, bool)) (*Loaded, error) {
 		return nil, fmt.Errorf("reading policy file: %w", err)
 	}
 	var f File
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&f); err != nil {
-		return nil, fmt.Errorf("parsing policy file %s: %w", path, err)
+	if strings.EqualFold(filepath.Ext(path), ".toml") {
+		md, err := toml.Decode(string(raw), &f)
+		if err != nil {
+			return nil, fmt.Errorf("parsing policy file %s: %w", path, err)
+		}
+		if extra := md.Undecoded(); len(extra) > 0 {
+			return nil, fmt.Errorf("parsing policy file %s: unknown key %q", path, extra[0].String())
+		}
+	} else {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&f); err != nil {
+			return nil, fmt.Errorf("parsing policy file %s: %w", path, err)
+		}
 	}
 	l, err := f.Resolve(filepath.Dir(path), env)
 	if err != nil {

@@ -52,6 +52,12 @@ bridge ends the MCP session and Tether closes the tabs that session opened.
 `http://127.0.0.1:8787/mcp` and, if you use a token, send
 `Authorization: Bearer <token>`.
 
+**Clients that sign in with OAuth** (claude.ai custom connectors, remote
+servers in Claude Desktop, IDEs that can't send a fixed header) — enable
+`[mcp.oauth]` in the [config file](CONFIG.md#mcp-oauth) (or pass
+`--mcp-oauth`), add `http(s)://<tether>/mcp` in the client, and approve the
+sign-in page with a Tether token. The client then acts as that token.
+
 ## How a session works
 
 Each MCP session works in one **current tab**:
@@ -153,6 +159,9 @@ is signed in to. In addition to [SECURITY.md](../SECURITY.md):
   read or act on where it landed.
 - **Tokens:** prefer `TETHER_TOKEN` or `--token-file` over `--token` so the
   token does not show up in `ps` or in an MCP config file.
+- **OAuth** grants act as the token approved on the consent page, open `/mcp`
+  only, and die when that token is removed or changed. Approve agents with a
+  narrow per-agent token rather than the admin one.
 
 ## Protocol details
 

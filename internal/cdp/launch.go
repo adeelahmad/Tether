@@ -18,8 +18,12 @@ type LaunchOptions struct {
 	// UserDataDir is the profile directory. Use a persistent directory so
 	// logins survive restarts; empty means a throwaway temp directory.
 	UserDataDir string
-	Headless    bool
-	ExtraArgs   []string
+	// Profile picks a profile inside UserDataDir by its directory name,
+	// e.g. "Default" or "Profile 1" (--profile-directory). Empty means
+	// Chrome's choice, normally the last one used.
+	Profile   string
+	Headless  bool
+	ExtraArgs []string
 }
 
 // Process is a Chrome launched by Tether.
@@ -63,6 +67,9 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Process, error) {
 		"--no-default-browser-check",
 		"--disable-background-networking",
 		"--disable-features=Translate",
+	}
+	if opts.Profile != "" {
+		args = append(args, "--profile-directory="+opts.Profile)
 	}
 	if opts.Headless {
 		args = append(args, "--headless=new", "--hide-scrollbars", "--mute-audio")

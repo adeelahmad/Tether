@@ -19,6 +19,7 @@ import (
 	"github.com/adeelahmad/tether/internal/core"
 	"github.com/adeelahmad/tether/internal/frontdoor"
 	"github.com/adeelahmad/tether/internal/mcp"
+	"github.com/adeelahmad/tether/internal/oauth"
 	"github.com/adeelahmad/tether/internal/policy"
 	"github.com/adeelahmad/tether/internal/proxy"
 	"github.com/adeelahmad/tether/internal/remote"
@@ -61,13 +62,19 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 
 	wsURL := ""
 	if cfg.Launch {
-		a.launched, err = cdp.Launch(ctx, cdp.LaunchOptions{Bin: cfg.ChromeBin, UserDataDir: cfg.ProfileDir, Headless: cfg.Headless, ExtraArgs: cfg.ChromeArgs})
+		a.launched, err = cdp.Launch(ctx, cdp.LaunchOptions{
+			Bin: cfg.ChromeBin, UserDataDir: cfg.ProfileDir, Profile: cfg.ChromeProfile,
+			Headless: cfg.Headless, ExtraArgs: cfg.ChromeArgs,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("launching chrome: %w", err)
 		}
 		wsURL = a.launched.WSURL
-		log.Info("launched chrome", "profile", cfg.ProfileDir, "headless", cfg.Headless)
+		log.Info("launched chrome", "user_data_dir", cfg.ProfileDir, "profile", cfg.ChromeProfile, "headless", cfg.Headless)
 	} else {
+		if cfg.ChromeProfile != "" {
+			log.Warn("chrome profile is only used with --launch; connecting to the running Chrome as is")
+		}
 		wsURL, err = cdp.ResolveEndpoint(ctx, cfg.Chrome)
 		if err != nil {
 			return nil, err
@@ -81,6 +88,13 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 	}
 	a.browser = chrome
 	chrome.SetLogBuffer(cfg.ConsoleBuffer)
+	chrome.SetExtraHeaders(cfg.ExtraHeaders)
+	if err := chrome.SetCookies(cctx, cfg.Cookies); err != nil {
+		return nil, fmt.Errorf("setting configured cookies: %w", err)
+	}
+	if len(cfg.Cookies) > 0 {
+		log.Info("set configured cookies", "count", len(cfg.Cookies))
+	}
 	if a.Browser, err = chrome.Version(cctx); err != nil {
 		return nil, fmt.Errorf("talking to chrome: %w", err)
 	}
@@ -109,6 +123,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 	}
 
 	px := proxy.New(a.Core, ca, log)
+	px.StripHeaders = cfg.StripHeaders
 	wd := webdriver.New(a.Core, log)
 	faces := []string{px.Name(), wd.Name()}
 	mounted := map[string]core.Face{}
@@ -132,6 +147,28 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 		mounted[remote.Prefix] = a.ui
 		uiPrefix = remote.Prefix
 	}
+	var oauthServer *oauth.Server
+	if cfg.MCP && cfg.OAuth.Enabled {
+		key, err := oauth.LoadOrCreateKey(cfg.DataDir)
+		if err != nil {
+			return nil, err
+		}
+		oauthServer, err = oauth.New(oauth.Options{
+			Key:                 key,
+			Credentials:         cfg.Credentials,
+			PublicURL:           cfg.PublicURL,
+			Resource:            mcp.Prefix,
+			AccessTTL:           cfg.OAuth.AccessTTL,
+			RefreshTTL:          cfg.OAuth.RefreshTTL,
+			DynamicRegistration: cfg.OAuth.DynamicRegistration,
+			Clients:             cfg.OAuth.Clients,
+			Logger:              log,
+		})
+		if err != nil {
+			return nil, err
+		}
+		log.Info("mcp oauth enabled", "dynamic_registration", cfg.OAuth.DynamicRegistration, "clients", len(cfg.OAuth.Clients))
+	}
 	a.server = server.New(server.Options{
 		Token:       cfg.Token,
 		Credentials: cfg.Credentials,
@@ -142,6 +179,8 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (_ *App, e
 		WebDriver:   wd,
 		Faces:       mounted,
 		UIPrefix:    uiPrefix,
+		OAuth:       oauthServer,
+		MCPPrefix:   mcp.Prefix,
 	})
 
 	if a.listener, err = frontdoor.Listen(ctx, cfg.Addr, log); err != nil {

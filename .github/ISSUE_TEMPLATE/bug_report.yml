@@ -1,0 +1,48 @@
+name: Bug report
+description: Something in Tether doesn't work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! **Never paste tokens, cookies or the contents of
+        your CA key.** For security issues, see SECURITY.md instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you run, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. tether serve --launch
+        2. curl -x http://127.0.0.1:8787 ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: tether version
+      description: Output of `tether version`
+    validations:
+      required: true
+  - type: input
+    id: chrome
+    attributes:
+      label: Chrome version and how Tether connects
+      placeholder: "Chrome 141, --launch / --chrome 9222 / chrome://inspect toggle"
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: macOS 15 (arm64)
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Run with `--log-level debug`. Tether redacts secrets, but please double-check.
+      render: text

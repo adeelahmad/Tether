@@ -1,0 +1,24 @@
+# Build output
+/bin/
+/dist/
+/tether
+*.exe
+*.test
+*.out
+coverage.*
+
+# Local Tether state (CA key, launched Chrome profile)
+/.tether/
+*.pem
+!docs/**/*.pem
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Go workspaces
+go.work
+go.work.sum

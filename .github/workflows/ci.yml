@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: go mod tidy is clean
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+      - name: go vet
+        run: go vet ./... && go vet -tags integration ./...
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.5.0
+
+  test:
+    name: Test (${{ matrix.os }}, Go ${{ matrix.go }})
+    needs: lint
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        go: ["1.23.x", "stable"]
+        include:
+          - os: macos-latest
+            go: stable
+          - os: windows-latest
+            go: stable
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go }}
+      - name: Unit + integration tests (race, coverage, real headless Chrome)
+        if: runner.os == 'Linux'
+        env:
+          # Ubuntu 24.04 runners block Chrome's user-namespace sandbox.
+          TETHER_CHROME_ARGS: --no-sandbox
+          TETHER_REQUIRE_CHROME: "1"
+        run: >-
+          go test -race -count=1 -tags integration
+          -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
+      - name: Unit tests
+        if: runner.os != 'Linux'
+        run: go test -count=1 ./...
+      - name: Coverage summary
+        if: runner.os == 'Linux' && matrix.go == 'stable'
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}')
+          echo "Total coverage: **${total}**" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func=coverage.out >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux' && matrix.go == 'stable'
+        with:
+          name: coverage
+          path: coverage.out
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: darwin, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: linux, goarch: amd64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+      - name: Build static binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: make build
+      - name: Smoke test
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: ./bin/tether version
+
+  govulncheck:
+    name: govulncheck
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

@@ -1,6 +1,8 @@
-// Package config parses Tether's configuration from flags and the
-// environment. Every flag has a TETHER_* environment variable; an
-// explicitly passed flag always wins over the environment.
+// Package config parses Tether's configuration from flags, the
+// environment and a TOML config file. Every flag has a TETHER_*
+// environment variable and most have a config-file key. Precedence, from
+// strongest: an explicitly passed flag, the environment, the config file,
+// the built-in default.
 package config
 
 import (
@@ -8,12 +10,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/adeelahmad/tether/internal/cdp"
 	"github.com/adeelahmad/tether/internal/policy"
 )
 
@@ -26,14 +30,17 @@ type Config struct {
 	Token               string
 	InsecureAllowPublic bool
 
-	Chrome      string // DevTools endpoint spec (see cdp.ResolveEndpoint)
-	Launch      bool
-	Headless    bool
-	ChromeBin   string
-	ChromeArgs  []string
-	ProfileDir  string
-	IdleTimeout time.Duration
-	Timeout     time.Duration
+	Chrome     string // DevTools endpoint spec (see cdp.ResolveEndpoint)
+	Launch     bool
+	Headless   bool
+	ChromeBin  string
+	ChromeArgs []string
+	ProfileDir string
+	// ChromeProfile is the profile directory name inside ProfileDir, e.g.
+	// "Profile 1" (--profile-directory). Only used with Launch.
+	ChromeProfile string
+	IdleTimeout   time.Duration
+	Timeout       time.Duration
 	// ConsoleBuffer is how many console/log entries each tab keeps; 0
 	// turns capture off.
 	ConsoleBuffer int
@@ -44,6 +51,22 @@ type Config struct {
 	DataDir      string
 	NoMITM       bool
 	MCP          bool
+	// PublicURL is the externally visible base URL (OAuth issuer).
+	PublicURL string
+	OAuth     OAuthConfig
+
+	// ExtraHeaders are sent by the browser with every request from the
+	// tabs Tether attaches to; StripHeaders are client request headers
+	// the proxy drops before replaying a request.
+	ExtraHeaders map[string]string
+	StripHeaders []string
+	// Cookies are stored in the browser's cookie jar at startup.
+	Cookies []cdp.Cookie
+
+	Tailscale TailscaleConfig
+
+	// ConfigFile is the config file that was read, if any.
+	ConfigFile string
 
 	NoRemote      bool
 	RemoteQuality int
@@ -52,9 +75,24 @@ type Config struct {
 	LogFormat string
 
 	// Derived by Parse: the merged global rules and every accepted token
-	// (--token as the admin "default" principal, plus the policy file's).
+	// (--token as the admin "default" principal, plus the config and
+	// policy files').
 	Rules       policy.Rules
 	Credentials []policy.Credential
+
+	fileTokens []policy.Credential
+}
+
+// TailscaleConfig exposes Tether on a tailnet through the tailscale CLI.
+type TailscaleConfig struct {
+	// Enabled listens on this machine's tailnet IPv4 address instead of
+	// the host in Addr (the port is kept).
+	Enabled bool
+	// Publish is "", "serve" (HTTPS on the tailnet) or "funnel" (HTTPS on
+	// the public internet), forwarding to Tether's listener.
+	Publish   string
+	HTTPSPort int
+	Bin       string
 }
 
 // Env looks up an environment variable.
@@ -66,17 +104,34 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 		env = os.LookupEnv
 	}
 	c := &Config{}
+	file := &loadedFile{vals: map[string]string{}}
+	if path, _ := configPath(args, env); path != "" {
+		var err error
+		if file, err = loadFile(path, env); err != nil {
+			return nil, err
+		}
+		c.ConfigFile = path
+	}
 	fs := flag.NewFlagSet("tether serve", flag.ContinueOnError)
 	fs.SetOutput(out)
 
-	str := func(p *string, name, envName, def, usage string) {
+	// layered returns the value below the flag: the environment, else
+	// the config file, else nothing.
+	layered := func(name, envName string) (string, bool) {
 		if v, ok := env(envName); ok {
+			return v, true
+		}
+		v, ok := file.vals[name]
+		return v, ok
+	}
+	str := func(p *string, name, envName, def, usage string) {
+		if v, ok := layered(name, envName); ok {
 			def = v
 		}
 		fs.StringVar(p, name, def, usage+" [$"+envName+"]")
 	}
 	boolean := func(p *bool, name, envName string, def bool, usage string) {
-		if v, ok := env(envName); ok {
+		if v, ok := layered(name, envName); ok {
 			if b, err := strconv.ParseBool(v); err == nil {
 				def = b
 			}
@@ -84,7 +139,7 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 		fs.BoolVar(p, name, def, usage+" [$"+envName+"]")
 	}
 	integer := func(p *int, name, envName string, def int, usage string) {
-		if v, ok := env(envName); ok {
+		if v, ok := layered(name, envName); ok {
 			if n, err := strconv.Atoi(v); err == nil {
 				def = n
 			}
@@ -92,13 +147,16 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 		fs.IntVar(p, name, def, usage+" [$"+envName+"]")
 	}
 	dur := func(p *time.Duration, name, envName string, def time.Duration, usage string) {
-		if v, ok := env(envName); ok {
+		if v, ok := layered(name, envName); ok {
 			if d, err := time.ParseDuration(v); err == nil {
 				def = d
 			}
 		}
 		fs.DurationVar(p, name, def, usage+" [$"+envName+"]")
 	}
+
+	var configFlag string
+	fs.StringVar(&configFlag, "config", "", "TOML config file (default: "+DefaultConfigPath()+" if it exists; --config= for none) [$TETHER_CONFIG]")
 
 	var allow, deny, tokenFile, chromeArgs string
 	str(&c.Addr, "addr", "TETHER_ADDR", DefaultAddr, "listen address (loopback by default)")
@@ -110,22 +168,30 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 	boolean(&c.Headless, "headless", "TETHER_HEADLESS", false, "with --launch: run Chrome headless")
 	str(&c.ChromeBin, "chrome-bin", "TETHER_CHROME_BIN", "", "with --launch: Chrome executable (default: auto-detect)")
 	str(&chromeArgs, "chrome-args", "TETHER_CHROME_ARGS", "", "with --launch: extra space-separated Chrome flags, e.g. --no-sandbox")
-	str(&c.ProfileDir, "profile-dir", "TETHER_PROFILE_DIR", "", "with --launch: Chrome profile directory (default: <data-dir>/chrome-profile)")
+	str(&c.ProfileDir, "profile-dir", "TETHER_PROFILE_DIR", "", "with --launch: Chrome user data directory (default: <data-dir>/chrome-profile)")
+	str(&c.ChromeProfile, "chrome-profile", "TETHER_CHROME_PROFILE", "", "with --launch: profile inside --profile-dir, e.g. \"Profile 1\" (default: the last one used)")
 	dur(&c.IdleTimeout, "idle-timeout", "TETHER_IDLE_TIMEOUT", 15*time.Minute, "close tabs Tether opened after this much inactivity (0 disables)")
 	dur(&c.Timeout, "timeout", "TETHER_TIMEOUT", 60*time.Second, "default per-request timeout")
 	integer(&c.ConsoleBuffer, "console-buffer", "TETHER_CONSOLE_BUFFER", 1000, "console and browser log entries kept per tab (0 disables capture and leaves the Runtime/Log domains off)")
 	str(&allow, "allow-domains", "TETHER_ALLOW_DOMAINS", "", "comma-separated domain allowlist (default: all)")
 	str(&deny, "deny-domains", "TETHER_DENY_DOMAINS", "", "comma-separated domain denylist; deny beats allow")
-	str(&c.PolicyFile, "policy-file", "TETHER_POLICY_FILE", "", "JSON policy file: global rules plus per-token rules (see SECURITY.md)")
+	str(&c.PolicyFile, "policy-file", "TETHER_POLICY_FILE", "", "JSON or TOML policy file: global rules plus per-token rules (see docs/POLICIES.md)")
 	str(&c.DataDir, "data-dir", "TETHER_DATA_DIR", DefaultDataDir(), "where the local CA and launched profile live")
 	boolean(&c.NoMITM, "no-mitm", "TETHER_NO_MITM", false, "refuse HTTPS CONNECT instead of intercepting it with the local CA")
 	boolean(&c.NoRemote, "no-remote", "TETHER_NO_REMOTE", false, "disable the remote-browser web UI at /remote/")
 	integer(&c.RemoteQuality, "remote-quality", "TETHER_REMOTE_QUALITY", 70, "JPEG quality of the remote UI video, 1-100")
 	boolean(&c.MCP, "mcp", "TETHER_MCP", true, "serve the MCP face for AI agents at /mcp")
+	boolean(&c.OAuth.Enabled, "mcp-oauth", "TETHER_MCP_OAUTH", false, "let MCP clients sign in with OAuth (needs a token; see docs/CONFIG.md)")
+	str(&c.PublicURL, "public-url", "TETHER_PUBLIC_URL", "", "externally visible base URL, e.g. https://tether.example.ts.net (default: from each request)")
+	boolean(&c.Tailscale.Enabled, "tailscale", "TETHER_TAILSCALE", false, "listen on this machine's Tailscale address (keeps the --addr port; needs a token)")
+	str(&c.Tailscale.Publish, "tailscale-publish", "TETHER_TAILSCALE_PUBLISH", "", "also publish over HTTPS: serve (tailnet only) or funnel (public internet); needs a token")
+	integer(&c.Tailscale.HTTPSPort, "tailscale-https-port", "TETHER_TAILSCALE_HTTPS_PORT", 443, "HTTPS port for --tailscale-publish (funnel: 443, 8443 or 10000)")
+	str(&c.Tailscale.Bin, "tailscale-bin", "TETHER_TAILSCALE_BIN", "tailscale", "the tailscale CLI")
 	str(&c.LogLevel, "log-level", "TETHER_LOG_LEVEL", "info", "debug, info, warn or error")
 	str(&c.LogFormat, "log-format", "TETHER_LOG_FORMAT", "text", "text or json")
 
-	if err := fs.Parse(args); err != nil {
+	err := fs.Parse(args)
+	if err != nil {
 		return nil, err
 	}
 	if fs.NArg() > 0 {
@@ -138,7 +204,19 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 		}
 		c.Token = strings.TrimSpace(string(b))
 	}
-	c.ChromeArgs = strings.Fields(chromeArgs)
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if _, inEnv := env("TETHER_CHROME_ARGS"); file.chromeArgs != nil && !set["chrome-args"] && !inEnv {
+		c.ChromeArgs = file.chromeArgs // the file's list keeps arguments with spaces intact
+	} else {
+		c.ChromeArgs = strings.Fields(chromeArgs)
+	}
+	oauthOn := c.OAuth.Enabled
+	if c.OAuth, err = resolveOAuth(file.oauth, oauthOn, env); err != nil {
+		return nil, fmt.Errorf("config file %s: %w", c.ConfigFile, err)
+	}
+	c.ExtraHeaders, c.StripHeaders, c.Cookies = file.headers, file.strip, file.cookies
+	c.fileTokens = file.tokens
 	c.AllowDomains = splitList(allow)
 	c.DenyDomains = splitList(deny)
 	if c.ProfileDir == "" {
@@ -147,7 +225,16 @@ func Parse(args []string, env Env, out io.Writer) (*Config, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	return c, c.resolvePolicy(env)
+	if err := c.resolvePolicy(env); err != nil {
+		return nil, err
+	}
+	if c.Tailscale.Publish != "" && len(c.Credentials) == 0 {
+		return nil, fmt.Errorf("--tailscale-publish %s needs a token: set --token or [auth] in the config file", c.Tailscale.Publish)
+	}
+	if c.OAuth.Enabled && len(c.Credentials) == 0 {
+		return nil, errors.New("MCP OAuth needs at least one token to approve sign-ins with: set --token or [auth] in the config file")
+	}
+	return c, nil
 }
 
 func splitList(s string) []string {
@@ -170,6 +257,7 @@ func (c *Config) resolvePolicy(env Env) error {
 			Principal: &policy.Principal{Name: policy.DefaultTokenName, Admin: true, Scripts: true},
 		})
 	}
+	c.Credentials = append(c.Credentials, c.fileTokens...)
 	if c.PolicyFile != "" {
 		l, err := policy.LoadFile(c.PolicyFile, env)
 		if err != nil {
@@ -209,6 +297,23 @@ func (c *Config) Validate() error {
 	}
 	if c.Token != "" && len(c.Token) < 16 {
 		return errors.New("--token must be at least 16 characters")
+	}
+	switch c.Tailscale.Publish {
+	case "", "serve", "funnel":
+	default:
+		return errors.New("--tailscale-publish must be serve or funnel")
+	}
+	if c.Tailscale.HTTPSPort < 1 || c.Tailscale.HTTPSPort > 65535 {
+		return errors.New("--tailscale-https-port must be a port number")
+	}
+	if c.Tailscale.Publish == "funnel" && c.Tailscale.HTTPSPort != 443 && c.Tailscale.HTTPSPort != 8443 && c.Tailscale.HTTPSPort != 10000 {
+		return errors.New("tailscale funnel only serves on HTTPS port 443, 8443 or 10000")
+	}
+	if c.PublicURL != "" {
+		u, err := url.Parse(c.PublicURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || (u.Path != "" && u.Path != "/") {
+			return errors.New("--public-url must be an http(s) origin like https://tether.example.ts.net")
+		}
 	}
 	return nil
 }

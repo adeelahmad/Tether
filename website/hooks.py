@@ -22,6 +22,8 @@ LINKS = {
     "CHANGELOG.md": "changelog.md",
     "CODE_OF_CONDUCT.md": REPO + "CODE_OF_CONDUCT.md",
     "LICENSE": REPO + "LICENSE",
+    "../tether.example.toml": REPO + "tether.example.toml",
+    "tether.example.toml": REPO + "tether.example.toml",
 }
 
 LINK = re.compile(r"\]\(([^)#\s]+)(#[^)\s]*)?\)")

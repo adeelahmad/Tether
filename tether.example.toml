@@ -1,0 +1,119 @@
+# Tether config file.
+#
+# Copy this to ~/.config/tether/config.toml (macOS: ~/Library/Application
+# Support/tether/config.toml, Windows: %AppData%\tether\config.toml) and
+# Tether reads it on start, or point at any file with --config / $TETHER_CONFIG.
+#
+# Every key is optional. Precedence, strongest first:
+#   command-line flag  >  TETHER_* environment variable  >  this file  >  default
+# Relative paths are relative to this file; ~/ is your home directory.
+# Unknown keys are an error, so typos never silently do nothing.
+# Full reference: docs/CONFIG.md
+
+[server]
+# Where Tether listens. Loopback by default; any other address needs a
+# token ([auth]) or insecure_allow_public = true.
+addr = "127.0.0.1:8787"
+# insecure_allow_public = false   # listen beyond loopback with no token (dangerous)
+# public_url = "https://tether.your-tailnet.ts.net"   # externally visible origin (OAuth issuer)
+timeout = "60s"                   # default per-request timeout
+idle_timeout = "15m"              # close tabs Tether opened after this much inactivity ("0s" = never)
+# data_dir = "~/.config/tether"   # local CA, launched Chrome profile, OAuth key
+mitm = true                       # false: refuse HTTPS CONNECT instead of intercepting it
+
+[log]
+level = "info"                    # debug, info, warn, error
+format = "text"                   # text, json
+
+[auth]
+# The admin token. Set at most one of these. Keep secrets out of the file
+# with token_env or token_file.
+# token = "at-least-16-characters"
+# token_env = "TETHER_ADMIN_TOKEN"
+# token_file = "admin.token"
+
+# More tokens, each with its own permissions (same shape as --policy-file).
+# [[auth.tokens]]
+# name = "research-agent"
+# token_env = "RESEARCH_TOKEN"
+# allow = ["wikipedia.org", "arxiv.org"]   # may only browse these
+# deny = []
+# scripts = false                          # no arbitrary JavaScript
+# admin = false                            # only its own tabs
+
+[policy]
+# Global domain rules for everyone. "example.com" covers its subdomains,
+# "*.example.com" only the subdomains. Deny beats allow; an empty allow
+# list means everything not denied.
+allow = []
+deny = []
+# file = "policy.json"            # an extra JSON or TOML policy file, merged in
+
+[headers]
+# Sent by Chrome with every request from the tabs Tether drives, to every
+# site (including third-party resources). Don't put secrets here.
+extra = {}
+# extra = { "X-Purpose" = "automation" }
+# Client request headers the proxy drops before replaying a request.
+strip = []
+
+# Cookies stored in the browser's cookie jar when Tether starts. Each needs
+# url or domain. Use value_env for secrets.
+# [[cookies]]
+# url = "https://example.com"
+# name = "consent"
+# value = "yes"
+# path = "/"
+# secure = true
+# http_only = false
+# same_site = "Lax"               # Strict, Lax or None
+# expires = 2030-01-01T00:00:00Z  # omit for a session cookie
+
+[chrome]
+# Connect to a running Chrome: auto, a port, host:port, http(s)://..., ws://...,
+# or a DevToolsActivePort path.
+endpoint = "auto"
+# Or launch a dedicated Chrome:
+launch = false
+headless = false
+# bin = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+args = []                         # extra Chrome flags, e.g. ["--no-sandbox"]
+# user_data_dir = "~/.config/tether/chrome-profile"   # Chrome's --user-data-dir
+# profile = "Profile 1"           # which profile inside it (--profile-directory)
+
+[console]
+# Capture console messages, uncaught exceptions and browser log entries per
+# tab (read them via the API, WebDriver logs or MCP browser_console).
+enabled = true
+buffer = 1000                     # entries kept per tab
+
+[mcp]
+enabled = true                    # serve the MCP face at /mcp
+
+[mcp.oauth]
+# Let MCP clients (claude.ai connectors, Claude Desktop, IDEs) sign in with
+# OAuth instead of a pasted token. Needs a token in [auth]: the consent page
+# asks for one, and the client then acts as that token.
+enabled = false
+access_token_ttl = "1h"
+refresh_token_ttl = "720h"
+dynamic_registration = true       # let clients register themselves
+
+# Pre-registered clients, for apps that don't register dynamically.
+# [[mcp.oauth.clients]]
+# id = "my-agent"
+# name = "My agent"
+# secret_env = "MY_AGENT_SECRET"  # omit for a public (PKCE-only) client
+# redirect_uris = ["http://127.0.0.1/callback"]
+
+[remote]
+enabled = true                    # the remote-browser web UI at /remote/
+quality = 70                      # JPEG quality of the video, 1-100
+
+[tailscale]
+# Uses the tailscale CLI already installed and logged in on this machine.
+# Both options below need a token in [auth].
+enabled = false                   # listen on this machine's tailnet IP (keeps the port of server.addr)
+publish = ""                      # "serve": HTTPS on your tailnet; "funnel": HTTPS on the public internet
+https_port = 443                  # funnel allows 443, 8443 or 10000
+bin = "tailscale"

@@ -14,6 +14,7 @@ import (
 
 	"github.com/adeelahmad/tether/internal/core"
 	"github.com/adeelahmad/tether/internal/httpx"
+	"github.com/adeelahmad/tether/internal/oauth"
 	"github.com/adeelahmad/tether/internal/policy"
 	"github.com/adeelahmad/tether/internal/proxy"
 )
@@ -72,6 +73,10 @@ func IsLoopbackAddr(ctx context.Context, addr string) (bool, error) {
 // it in Authorization.
 type authenticator struct {
 	creds []credential
+	// With OAuth, its access tokens also authenticate requests under
+	// mcpPrefix (and only there), and 401s there point at its metadata.
+	oauth     *oauth.Server
+	mcpPrefix string
 }
 
 type credential struct {
@@ -146,11 +151,26 @@ func (a *authenticator) wrap(next http.Handler, uiPrefix string) http.Handler {
 			}
 			r.Header.Del("Proxy-Authorization")
 		} else if p = a.check(r.Header.Get("Authorization")); p == nil {
-			a.deny(w)
-			return
+			if a.oauth == nil || !underPrefix(r.URL.Path, a.mcpPrefix) {
+				a.deny(w)
+				return
+			}
+			if p = a.checkOAuth(r.Header.Get("Authorization")); p == nil {
+				w.Header().Set("WWW-Authenticate", a.oauth.Challenge(r))
+				httpx.WriteError(w, http.StatusUnauthorized, core.CodeUnauthorized, "missing or invalid bearer token")
+				return
+			}
 		}
 		next.ServeHTTP(w, r.WithContext(policy.WithPrincipal(r.Context(), p)))
 	})
+}
+
+func (a *authenticator) checkOAuth(header string) *policy.Principal {
+	scheme, tok, ok := strings.Cut(strings.TrimSpace(header), " ")
+	if !ok || !strings.EqualFold(scheme, "bearer") {
+		return nil
+	}
+	return a.oauth.Verify(strings.TrimSpace(tok))
 }
 
 func (a *authenticator) deny(w http.ResponseWriter) {

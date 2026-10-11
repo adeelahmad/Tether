@@ -37,6 +37,11 @@ tabs and its own name in the logs.
 tether serve --policy-file examples/policy.json
 ```
 
+The same tokens and rules can live in the [config file](CONFIG.md) instead,
+as `[[auth.tokens]]` and `[policy]`, and a policy file whose name ends in
+`.toml` is read as TOML with the same keys. Tokens from all sources are
+accepted together.
+
 ```json
 {
   "deny": ["accounts.google.com"],

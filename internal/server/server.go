@@ -18,6 +18,7 @@ import (
 	"github.com/adeelahmad/tether/internal/core"
 	"github.com/adeelahmad/tether/internal/httpx"
 	"github.com/adeelahmad/tether/internal/logx"
+	"github.com/adeelahmad/tether/internal/oauth"
 	"github.com/adeelahmad/tether/internal/policy"
 	"github.com/adeelahmad/tether/internal/proxy"
 	"github.com/adeelahmad/tether/internal/version"
@@ -42,6 +43,10 @@ type Options struct {
 	// any. Under it the server also accepts its login cookie and serves
 	// the login form (see uilogin.go).
 	UIPrefix string
+	// OAuth, if set, serves the OAuth endpoints without authentication
+	// and lets its access tokens authenticate requests under MCPPrefix.
+	OAuth     *oauth.Server
+	MCPPrefix string
 }
 
 // Server is Tether's HTTP server.
@@ -106,9 +111,28 @@ func New(opts Options) *Server {
 			Name: policy.DefaultTokenName, Admin: true, Scripts: true,
 		}}}, creds...)
 	}
-	h = newAuthenticator(creds).wrap(h, opts.UIPrefix)
+	auth := newAuthenticator(creds)
+	if auth != nil && opts.OAuth != nil {
+		auth.oauth, auth.mcpPrefix = opts.OAuth, opts.MCPPrefix
+	}
+	h = auth.wrap(h, opts.UIPrefix)
+	if opts.OAuth != nil {
+		h = oauthRoutes(opts.OAuth, h)
+	}
 	h = recoverer(lg, h)
 	return &Server{handler: h, log: lg}
+}
+
+// oauthRoutes serves the OAuth endpoints ahead of authentication: clients
+// call them before they have a token.
+func oauthRoutes(o *oauth.Server, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !proxy.IsProxyRequest(r) && o.Owns(r.URL.Path) {
+			o.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func hasToken(creds []policy.Credential, token string) bool {

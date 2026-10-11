@@ -82,7 +82,8 @@ nav:
       - Remote browser UI: REMOTE.md
       - Policies: POLICIES.md
   - Reference:
-      - Configuration: configuration.md
+      - Flags & environment: configuration.md
+      - Config file (TOML): CONFIG.md
       - Architecture: ARCHITECTURE.md
       - Security: security.md
   - Project:

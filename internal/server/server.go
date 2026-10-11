@@ -1,7 +1,8 @@
 // Package server wires Tether's faces onto one listener: the forward proxy
 // (CONNECT and absolute-form requests), the control API, the WebDriver
-// endpoints, and the MCP and remote-UI seams. It owns authentication, the
-// loopback guard, and graceful shutdown.
+// endpoints, the remote UI and the MCP face. It owns authentication
+// (including the remote UI's login cookie), the loopback guard, and
+// graceful shutdown.
 package server
 
 import (
@@ -11,18 +12,23 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/adeelahmad/tether/internal/core"
 	"github.com/adeelahmad/tether/internal/httpx"
 	"github.com/adeelahmad/tether/internal/logx"
+	"github.com/adeelahmad/tether/internal/policy"
 	"github.com/adeelahmad/tether/internal/proxy"
 	"github.com/adeelahmad/tether/internal/version"
 )
 
 // Options configure a Server.
 type Options struct {
-	Token string
+	// Token is a single admin token; Credentials adds more, each with its
+	// own principal. Either enables authentication.
+	Token       string
+	Credentials []policy.Credential
 	// Guard enables the loopback Host/Origin guard on Tether's own
 	// endpoints. Set it when listening on loopback without a token.
 	Guard bool
@@ -32,6 +38,10 @@ type Options struct {
 	API       http.Handler
 	WebDriver http.Handler
 	Faces     map[string]core.Face // extra faces by mount prefix, e.g. "/mcp"
+	// UIPrefix is the mount prefix of the browser-facing remote UI, if
+	// any. Under it the server also accepts its login cookie and serves
+	// the login form (see uilogin.go).
+	UIPrefix string
 }
 
 // Server is Tether's HTTP server.
@@ -47,14 +57,23 @@ func New(opts Options) *Server {
 		lg = slog.Default()
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		if opts.UIPrefix != "" && strings.Contains(r.Header.Get("Accept"), "text/html") {
+			// A person opened the address in a browser: show them the UI.
+			http.Redirect(w, r, opts.UIPrefix+"/", http.StatusFound)
+			return
+		}
+		info := map[string]any{
 			"name":    "tether",
 			"version": version.Version,
 			"docs":    "https://github.com/adeelahmad/tether#readme",
 			"proxy":   "configure this address as your HTTP(S) proxy",
 			"api":     "/tether/v1/",
-		})
+		}
+		if opts.UIPrefix != "" {
+			info["ui"] = opts.UIPrefix + "/"
+		}
+		httpx.WriteJSON(w, http.StatusOK, info)
 	})
 	if opts.API != nil {
 		mux.Handle("/tether/v1/", opts.API)
@@ -81,9 +100,24 @@ func New(opts Options) *Server {
 	if opts.Guard {
 		h = localGuard(h)
 	}
-	h = newAuthenticator(opts.Token).wrap(h)
+	creds := opts.Credentials
+	if opts.Token != "" && !hasToken(creds, opts.Token) {
+		creds = append([]policy.Credential{{Token: opts.Token, Principal: &policy.Principal{
+			Name: policy.DefaultTokenName, Admin: true, Scripts: true,
+		}}}, creds...)
+	}
+	h = newAuthenticator(creds).wrap(h, opts.UIPrefix)
 	h = recoverer(lg, h)
 	return &Server{handler: h, log: lg}
+}
+
+func hasToken(creds []policy.Credential, token string) bool {
+	for _, c := range creds {
+		if c.Token == token {
+			return true
+		}
+	}
+	return false
 }
 
 // Handler returns the full handler chain.

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/adeelahmad/tether/internal/cdp"
 	"github.com/adeelahmad/tether/internal/cdp/cdptest"
 	"github.com/adeelahmad/tether/internal/core"
 	"github.com/adeelahmad/tether/internal/session"
@@ -153,7 +154,7 @@ func TestTimeouts(t *testing.T) {
 
 func TestUnknownCommandAndWindows(t *testing.T) {
 	h, _, _ := newHandler(t)
-	code, out := do(t, h, "POST", "/session/x/actions", map[string]any{})
+	code, out := do(t, h, "POST", "/session/x/se/bogus", map[string]any{})
 	if code != 404 || errCode(out) != ErrUnknownCommand {
 		t.Fatalf("%d %v", code, out)
 	}
@@ -216,9 +217,10 @@ func TestElementRefs(t *testing.T) {
 	v := replacePlaceholders(map[string]any{
 		"a": []any{map[string]any{"__tetherEl": float64(1)}, "x"},
 		"b": map[string]any{"__tetherEl": float64(0)},
-	}, []string{"e1", "e2"})
+		"c": map[string]any{"__tetherEl": float64(0), "s": float64(1)},
+	}, []int{1, 2})
 	b, _ := json.Marshal(v)
-	want := `{"a":[{"` + ElementKey + `":"e2"},"x"],"b":{"` + ElementKey + `":"e1"}}`
+	want := `{"a":[{"` + ElementKey + `":"e2"},"x"],"b":{"` + ElementKey + `":"e1"},"c":{"` + ShadowKey + `":"s1"}}`
 	if string(b) != want {
 		t.Fatalf("got %s", b)
 	}
@@ -249,6 +251,67 @@ func TestWrappersEmbedScriptSafely(t *testing.T) {
 	for _, w := range []string{syncWrapper(src), asyncWrapper(src)} {
 		if !strings.Contains(w, src+"\n") {
 			t.Fatal("script must be followed by a newline so line comments cannot swallow the wrapper")
+		}
+	}
+}
+
+func TestGetLog(t *testing.T) {
+	h, b, _ := newHandler(t)
+	sid := newSession(t, h, nil)
+	tab, _ := b.AttachTab(context.Background(), sid)
+	ft := tab.(*cdptest.Tab)
+	ft.Log("warning", "careful")
+	ft.Log("error", "boom")
+
+	for _, p := range []string{"/session/" + sid + "/se/log/types", "/wd/hub/session/" + sid + "/log/types"} {
+		if code, out := do(t, h, "GET", p, nil); code != 200 || out["value"].([]any)[0] != "browser" {
+			t.Fatalf("%s: %d %v", p, code, out)
+		}
+	}
+
+	code, out := do(t, h, "POST", "/session/"+sid+"/se/log", map[string]string{"type": "browser"})
+	entries, _ := out["value"].([]any)
+	if code != 200 || len(entries) != 2 {
+		t.Fatalf("log: %d %v", code, out)
+	}
+	e := entries[1].(map[string]any)
+	if e["level"] != "SEVERE" || e["message"] != "boom" || e["source"] != "console-api" || e["timestamp"].(float64) <= 0 {
+		t.Fatalf("entry = %v", e)
+	}
+	if entries[0].(map[string]any)["level"] != "WARNING" {
+		t.Fatalf("warning entry = %v", entries[0])
+	}
+
+	// Each entry is returned once.
+	ft.Log("info", "later")
+	_, out = do(t, h, "POST", "/session/"+sid+"/log", map[string]string{"type": "browser"})
+	if got := out["value"].([]any); len(got) != 1 || got[0].(map[string]any)["message"] != "later" {
+		t.Fatalf("second read = %v", got)
+	}
+
+	if _, out := do(t, h, "POST", "/session/"+sid+"/se/log", map[string]string{"type": "driver"}); len(out["value"].([]any)) != 0 {
+		t.Fatalf("driver log = %v", out)
+	}
+	if code, out := do(t, h, "POST", "/session/"+sid+"/se/log", map[string]string{"type": "performance"}); code != 400 || errCode(out) != ErrInvalidArgument {
+		t.Fatalf("unknown type: %d %v", code, out)
+	}
+}
+
+func TestToWDLog(t *testing.T) {
+	tests := []struct {
+		in   cdp.LogEntry
+		want wdLogEntry
+	}{
+		{cdp.LogEntry{Source: "console", Level: "info", Text: "hi", URL: "https://a.test/app.js", Line: 3, Time: time.UnixMilli(5)},
+			wdLogEntry{Level: "INFO", Message: "https://a.test/app.js 3 hi", Source: "console-api", Timestamp: 5}},
+		{cdp.LogEntry{Source: "exception", Level: "error", Text: "Error: x", URL: "https://a.test/", Time: time.UnixMilli(6)},
+			wdLogEntry{Level: "SEVERE", Message: "https://a.test/ Error: x", Source: "javascript", Timestamp: 6}},
+		{cdp.LogEntry{Source: "network", Level: "debug", Text: "n", Time: time.UnixMilli(7)},
+			wdLogEntry{Level: "DEBUG", Message: "n", Source: "network", Timestamp: 7}},
+	}
+	for _, tt := range tests {
+		if got := toWDLog(tt.in); got != tt.want {
+			t.Errorf("toWDLog(%+v) = %+v, want %+v", tt.in, got, tt.want)
 		}
 	}
 }

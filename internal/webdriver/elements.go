@@ -19,7 +19,7 @@ const text = (a) => (a.innerText || a.textContent || '').trim();
 try {
   switch (using) {
     case 'css selector': return Array.from(scope.querySelectorAll(value));
-    case 'tag name': return Array.from(scope.getElementsByTagName(value));
+    case 'tag name': return Array.from(scope.getElementsByTagName ? scope.getElementsByTagName(value) : scope.querySelectorAll(value));
     case 'link text': return links().filter(a => text(a) === value);
     case 'partial link text': return links().filter(a => text(a).includes(value));
     case 'xpath': {
@@ -42,7 +42,9 @@ var locators = map[string]bool{
 	"css selector": true, "link text": true, "partial link text": true, "tag name": true, "xpath": true,
 }
 
-func (h *Handler) locate(ctx context.Context, ws *wdSession, r *http.Request, body []byte, fromElement bool) ([]any, error) {
+// locate finds elements from the document, or from root (an element or
+// shadow root argument) when it is non-nil.
+func (h *Handler) locate(ctx context.Context, ws *wdSession, body []byte, root json.RawMessage) ([]any, error) {
 	var req struct {
 		Using string `json:"using"`
 		Value string `json:"value"`
@@ -53,14 +55,13 @@ func (h *Handler) locate(ctx context.Context, ws *wdSession, r *http.Request, bo
 	if !locators[req.Using] {
 		return nil, wdErr(ErrInvalidArgument, "unsupported locator strategy "+req.Using)
 	}
-	root := json.RawMessage("null")
-	if fromElement {
-		root = elementArg(r.PathValue("eid"))
+	if root == nil {
+		root = json.RawMessage("null")
 	}
 	args := []json.RawMessage{stringArg(req.Using), stringArg(req.Value), root}
 	deadline := time.Now().Add(time.Duration(ws.getTimeouts().Implicit) * time.Millisecond)
 	for {
-		v, err := runScript(ctx, ws.s.Tab, findScript, args, false)
+		v, err := runScript(ctx, ws.tab(), findScript, args, false)
 		if err != nil {
 			var js *cdp.JSError
 			if errors.As(err, &js) && strings.Contains(js.Text, "InvalidSelector") {
@@ -80,31 +81,44 @@ func (h *Handler) locate(ctx context.Context, ws *wdSession, r *http.Request, bo
 	}
 }
 
+func elementRoot(r *http.Request, fromElement bool) json.RawMessage {
+	if fromElement {
+		return elementArg(r.PathValue("eid"))
+	}
+	return nil
+}
+
 func (h *Handler) findElement(fromElement bool) command {
 	return func(ctx context.Context, ws *wdSession, r *http.Request, body []byte) (any, error) {
-		found, err := h.locate(ctx, ws, r, body, fromElement)
-		if err != nil {
-			return nil, err
-		}
-		if len(found) == 0 {
-			return nil, wdErr(ErrNoSuchElement, "no element matches the locator")
-		}
-		return found[0], nil
+		return firstFound(h.locate(ctx, ws, body, elementRoot(r, fromElement)))
 	}
 }
 
 func (h *Handler) findElements(fromElement bool) command {
 	return func(ctx context.Context, ws *wdSession, r *http.Request, body []byte) (any, error) {
-		found, err := h.locate(ctx, ws, r, body, fromElement)
-		if found == nil && err == nil {
-			found = []any{}
-		}
-		return found, err
+		return allFound(h.locate(ctx, ws, body, elementRoot(r, fromElement)))
 	}
 }
 
+func firstFound(found []any, err error) (any, error) {
+	if err != nil {
+		return nil, err
+	}
+	if len(found) == 0 {
+		return nil, wdErr(ErrNoSuchElement, "no element matches the locator")
+	}
+	return found[0], nil
+}
+
+func allFound(found []any, err error) (any, error) {
+	if found == nil && err == nil {
+		found = []any{}
+	}
+	return found, err
+}
+
 func (h *Handler) activeElement(ctx context.Context, ws *wdSession, _ *http.Request, _ []byte) (any, error) {
-	v, err := runScript(ctx, ws.s.Tab, "return document.activeElement;", nil, false)
+	v, err := runScript(ctx, ws.tab(), "return document.activeElement;", nil, false)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +161,7 @@ func (h *Handler) elementScript(script string, pathParams ...string) command {
 		for _, p := range pathParams {
 			args = append(args, stringArg(r.PathValue(p)))
 		}
-		return runScript(ctx, ws.s.Tab, script, args, false)
+		return runScript(ctx, ws.tab(), script, args, false)
 	}
 }
 
@@ -172,7 +186,10 @@ return {visible: true, x, y, hit: !!hit && (hit === e || e.contains(hit) || hit.
         blocker: hit ? hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') : ''};`
 
 func (h *Handler) click(ctx context.Context, ws *wdSession, r *http.Request, _ []byte) (any, error) {
-	v, err := runScript(ctx, ws.s.Tab, scriptClickPoint, []json.RawMessage{elementArg(r.PathValue("eid"))}, false)
+	if err := revealFrames(ctx, ws); err != nil {
+		return nil, err
+	}
+	v, err := runScript(ctx, ws.tab(), scriptClickPoint, []json.RawMessage{elementArg(r.PathValue("eid"))}, false)
 	if err != nil {
 		return nil, err
 	}
@@ -196,11 +213,81 @@ func (h *Handler) click(ctx context.Context, ws *wdSession, r *http.Request, _ [
 	if !p.Hit {
 		return nil, wdErr(ErrElementClickIntercepted, "element is obscured by <"+p.Blocker+">")
 	}
-	if err := ws.s.Tab.Click(ctx, p.X, p.Y); err != nil {
+	ox, oy, err := frameOffset(ctx, ws)
+	if err != nil {
 		return nil, err
+	}
+	ref := elementArg(r.PathValue("eid"))
+	inFrame := len(ws.frames) > 0
+	if inFrame {
+		if _, err := runScript(ctx, ws.tab(), scriptArmClick, []json.RawMessage{ref}, false); err != nil {
+			return nil, err
+		}
+	}
+	if err := ws.s.Tab.Click(ctx, p.X+ox, p.Y+oy); err != nil {
+		if errors.Is(err, cdp.ErrDialogOpen) {
+			return nil, nil // the click opened a user prompt
+		}
+		return nil, err
+	}
+	if inFrame {
+		if err := confirmFrameClick(ctx, ws, ref); err != nil {
+			return nil, err
+		}
 	}
 	settle(ctx, ws)
 	return nil, nil
+}
+
+// Chrome routes input into a frame asynchronously, so a click in a frame
+// is confirmed by a one-shot listener on the element. If the real click
+// does not arrive (a cross-site frame Chrome could not hit-test), the
+// element is clicked from script instead.
+const (
+	scriptArmClick = `const e = arguments[0], k = Symbol.for('tether.clicked');
+e[k] = false;
+e.addEventListener('click', () => { e[k] = true; }, {capture: true, once: true});`
+	scriptClicked   = `return arguments[0][Symbol.for('tether.clicked')] !== false;`
+	scriptClickJS   = `const e = arguments[0]; delete e[Symbol.for('tether.clicked')]; e.click();`
+	frameClickGrace = time.Second
+)
+
+func confirmFrameClick(ctx context.Context, ws *wdSession, ref json.RawMessage) error {
+	deadline := time.Now().Add(frameClickGrace)
+	for {
+		v, err := runScript(ctx, ws.tab(), scriptClicked, []json.RawMessage{ref}, false)
+		if err != nil {
+			// The click navigated the frame or removed the element: it landed.
+			if errors.Is(err, cdp.ErrDialogOpen) || isGone(err) {
+				return nil
+			}
+			return err
+		}
+		if v == true {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	_, err := runScript(ctx, ws.tab(), scriptClickJS, []json.RawMessage{ref}, false)
+	if errors.Is(err, cdp.ErrDialogOpen) {
+		return nil
+	}
+	return err
+}
+
+func isGone(err error) bool {
+	var we *Error
+	if errors.As(err, &we) {
+		return we.Code == ErrStaleElement || we.Code == ErrNoSuchElement
+	}
+	return errors.Is(err, cdp.ErrNoSuchFrame) || cdp.IsStaleObject(err)
 }
 
 // settle gives a click-triggered navigation a moment to start and, if one
@@ -229,7 +316,7 @@ func settle(ctx context.Context, ws *wdSession) {
 }
 
 const scriptFocus = `const e = arguments[0];
-if (e.tagName === 'INPUT' && e.type === 'file') return 'file';
+if (e.tagName === 'INPUT' && e.type === 'file') return e.multiple ? 'files' : 'file';
 e.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'});
 e.focus();
 if (typeof e.setSelectionRange === 'function' && typeof e.value === 'string') {
@@ -248,17 +335,21 @@ func (h *Handler) sendKeys(ctx context.Context, ws *wdSession, r *http.Request, 
 	if req.Text == nil {
 		return nil, wdErr(ErrInvalidArgument, "text is required")
 	}
-	v, err := runScript(ctx, ws.s.Tab, scriptFocus, []json.RawMessage{elementArg(r.PathValue("eid"))}, false)
+	ref := r.PathValue("eid")
+	v, err := runScript(ctx, ws.tab(), scriptFocus, []json.RawMessage{elementArg(ref)}, false)
 	if err != nil {
 		return nil, err
 	}
 	switch v {
-	case "file":
-		return nil, wdErr(ErrUnsupportedOperation, "file uploads are not supported over Tether")
+	case "file", "files":
+		return nil, setFiles(ctx, ws, ref, *req.Text, v == "files")
 	case "unfocusable":
 		return nil, wdErr(ErrElementNotInteractable, "element cannot receive keyboard focus")
 	}
 	if err := typeText(ctx, ws.s.Tab, *req.Text); err != nil {
+		if errors.Is(err, cdp.ErrDialogOpen) {
+			return nil, nil // a key opened a user prompt
+		}
 		return nil, err
 	}
 	if strings.ContainsAny(*req.Text, "\uE006\uE007") {
@@ -279,7 +370,7 @@ e.blur();
 return true;`
 
 func (h *Handler) clear(ctx context.Context, ws *wdSession, r *http.Request, _ []byte) (any, error) {
-	v, err := runScript(ctx, ws.s.Tab, scriptClear, []json.RawMessage{elementArg(r.PathValue("eid"))}, false)
+	v, err := runScript(ctx, ws.tab(), scriptClear, []json.RawMessage{elementArg(r.PathValue("eid"))}, false)
 	if err != nil {
 		return nil, err
 	}
@@ -289,9 +380,18 @@ func (h *Handler) clear(ctx context.Context, ws *wdSession, r *http.Request, _ [
 	return nil, nil
 }
 
+// scriptViewportRect scrolls an element into view and returns its rect
+// relative to its frame's viewport.
+const scriptViewportRect = `const e = arguments[0];
+e.scrollIntoView({block: 'center', behavior: 'instant'});
+const r = e.getBoundingClientRect();
+return {x: r.left, y: r.top, width: r.width, height: r.height};`
+
 func (h *Handler) elementScreenshot(ctx context.Context, ws *wdSession, r *http.Request, _ []byte) (any, error) {
-	v, err := runScript(ctx, ws.s.Tab, `arguments[0].scrollIntoView({block: 'center', behavior: 'instant'});`+scriptRect,
-		[]json.RawMessage{elementArg(r.PathValue("eid"))}, false)
+	if err := revealFrames(ctx, ws); err != nil {
+		return nil, err
+	}
+	v, err := runScript(ctx, ws.tab(), scriptViewportRect, []json.RawMessage{elementArg(r.PathValue("eid"))}, false)
 	if err != nil {
 		return nil, err
 	}
@@ -307,6 +407,19 @@ func (h *Handler) elementScreenshot(ctx context.Context, ws *wdSession, r *http.
 	if rect.Width == 0 || rect.Height == 0 {
 		return nil, wdErr(ErrElementNotInteractable, "element has no size")
 	}
+	// The clip is in top-level document coordinates.
+	ox, oy, err := frameOffset(ctx, ws)
+	if err != nil {
+		return nil, err
+	}
+	scroll, err := ws.s.Tab.Evaluate(ctx, "({x: scrollX, y: scrollY})", false)
+	if err != nil {
+		return nil, err
+	}
+	var sc struct{ X, Y float64 }
+	_ = json.Unmarshal(scroll, &sc)
+	rect.X += ox + sc.X
+	rect.Y += oy + sc.Y
 	png, err := ws.s.Tab.Screenshot(ctx, &rect)
 	if err != nil {
 		return nil, err

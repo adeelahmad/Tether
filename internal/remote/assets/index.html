@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Tether</title>
+<link rel="icon" href="static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="static/app.css">
+<script src="static/app.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <button class="icon" id="toggle-tabs" title="Tabs" aria-label="Show tabs" aria-expanded="false" aria-controls="tabs">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+  </button>
+  <div class="nav">
+    <button class="icon" id="back" title="Back" aria-label="Back" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
+    <button class="icon" id="forward" title="Forward" aria-label="Forward" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg></button>
+    <button class="icon" id="reload" title="Reload" aria-label="Reload" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg></button>
+  </div>
+  <form id="address-form" class="address" autocomplete="off">
+    <span class="spinner" id="busy" hidden aria-label="Loading"></span>
+    <input id="address" type="text" inputmode="url" spellcheck="false" placeholder="Pick a tab, or type a URL to open one" aria-label="Address">
+  </form>
+  <div class="actions">
+    <button class="icon toggle on" id="control" title="You are in control: input goes to the tab. Click to watch only." aria-pressed="true" aria-label="Control the tab">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3l14 8-6 2-3 6z"/></svg>
+    </button>
+    <button class="icon" id="keyboard" title="Show keyboard" aria-label="Show keyboard"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg></button>
+    <button class="icon" id="front" title="Bring this tab to the front in Chrome (smoother video)" aria-label="Bring to front" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V6a2 2 0 0 1 2-2h10"/></svg></button>
+    <button class="icon" id="fullscreen" title="Full screen" aria-label="Full screen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+    <span class="status" id="status" title="Disconnected"><span class="dot"></span><span id="fps"></span></span>
+    <form method="post" action="logout" id="logout" hidden><button class="icon" title="Sign out" aria-label="Sign out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h4v16h-4M10 16l-4-4 4-4M6 12h10"/></svg></button></form>
+  </div>
+</header>
+<main>
+  <aside id="tabs" class="tabs" aria-label="Chrome tabs">
+    <div class="tabs-head">
+      <h2>Tabs</h2>
+      <button class="new" id="new-tab" title="Open a new tab">+ New tab</button>
+    </div>
+    <ul id="tab-list" role="list"></ul>
+    <p class="foot" id="foot"></p>
+  </aside>
+  <section class="stage" id="stage">
+    <canvas id="screen" hidden aria-label="Live view of the browser tab"></canvas>
+    <textarea id="sink" aria-label="Keyboard input for the tab" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
+    <div class="overlay" id="overlay">
+      <div class="card">
+        <h1 id="overlay-title">Your real Chrome, from anywhere</h1>
+        <p id="overlay-text">Pick a tab on the left to watch it live and take over, or open a new one.</p>
+      </div>
+    </div>
+    <div class="overlay" id="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" hidden>
+      <form class="card dialog" id="dialog-form">
+        <h1 id="dialog-title">This page says</h1>
+        <p id="dialog-message"></p>
+        <input id="dialog-input" type="text" aria-label="Your answer" hidden>
+        <div class="buttons">
+          <button type="button" class="new" id="dialog-cancel">Cancel</button>
+          <button type="submit" class="primary" id="dialog-ok">OK</button>
+        </div>
+      </form>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/adeelahmad/tether/internal/policy"
 )
 
 func envOf(m map[string]string) Env {
@@ -16,6 +18,11 @@ func envOf(m map[string]string) Env {
 func TestParse(t *testing.T) {
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenFile, []byte("from-a-file-0123456789\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policyFile := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(policyFile, []byte(`{"allow":["example.com"],"deny":["evil.test"],
+		"tokens":[{"name":"agent","token_env":"AGENT","allow":["example.com"]}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	tests := []struct {
@@ -55,6 +62,45 @@ func TestParse(t *testing.T) {
 				t.Fatal(c.ProfileDir)
 			}
 		}, false},
+		{"deny list", []string{"--deny-domains", "evil.test", "--allow-domains", "Example.com"}, nil, func(t *testing.T, c *Config) {
+			if !reflect.DeepEqual(c.Rules, policy.Rules{Allow: []string{"example.com"}, Deny: []string{"evil.test"}}) {
+				t.Fatalf("%+v", c.Rules)
+			}
+		}, false},
+		{"token is the admin default principal", []string{"--token", "a-long-enough-token"}, nil, func(t *testing.T, c *Config) {
+			if len(c.Credentials) != 1 || c.Credentials[0].Principal.Name != "default" || !c.Credentials[0].Principal.Admin || !c.HasAuth() {
+				t.Fatalf("%+v", c.Credentials)
+			}
+		}, false},
+		{"policy file", []string{"--policy-file", policyFile, "--token", "a-long-enough-token", "--allow-domains", "github.com"},
+			map[string]string{"AGENT": "agent-token-0123456789"}, func(t *testing.T, c *Config) {
+				if len(c.Credentials) != 2 || c.Credentials[1].Principal.Name != "agent" || c.Credentials[1].Token != "agent-token-0123456789" {
+					t.Fatalf("%+v", c.Credentials)
+				}
+				if !reflect.DeepEqual(c.Rules.Allow, []string{"github.com", "example.com"}) || c.Rules.Deny[0] != "evil.test" {
+					t.Fatalf("%+v", c.Rules)
+				}
+			}, false},
+		{"policy file alone enables auth", []string{"--policy-file", policyFile}, map[string]string{"AGENT": "agent-token-0123456789"}, func(t *testing.T, c *Config) {
+			if !c.HasAuth() {
+				t.Fatal("no auth")
+			}
+		}, false},
+		{"policy file token clashes with --token", []string{"--policy-file", policyFile, "--token", "agent-token-0123456789"},
+			map[string]string{"AGENT": "agent-token-0123456789"}, nil, true},
+		{"policy file missing env", []string{"--policy-file", policyFile}, nil, nil, true},
+		{"bad deny pattern", []string{"--deny-domains", "http://x"}, nil, nil, true},
+		{"console buffer", []string{"--console-buffer", "0"}, map[string]string{"TETHER_CONSOLE_BUFFER": "50"}, func(t *testing.T, c *Config) {
+			if c.ConsoleBuffer != 0 {
+				t.Fatal(c.ConsoleBuffer)
+			}
+		}, false},
+		{"console buffer default", nil, nil, func(t *testing.T, c *Config) {
+			if c.ConsoleBuffer != 1000 {
+				t.Fatal(c.ConsoleBuffer)
+			}
+		}, false},
+		{"negative console buffer", []string{"--console-buffer", "-1"}, nil, nil, true},
 		{"short token", []string{"--token", "short"}, nil, nil, true},
 		{"bad timeout", []string{"--timeout", "0s"}, nil, nil, true},
 		{"stray args", []string{"extra"}, nil, nil, true},

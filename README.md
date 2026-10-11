@@ -5,7 +5,7 @@
 ### Your logged-in Chrome — as a proxy, from anywhere. No extension.
 
 **Give your AI agent (or your script, or your other laptop) your real, logged-in browser.**<br/>
-One self-contained binary. Speaks plain HTTP proxy and WebDriver. Drives Chrome over the DevTools Protocol.
+One self-contained binary. Speaks MCP, plain HTTP proxy and WebDriver. Drives Chrome over the DevTools Protocol.
 
 [![CI](https://github.com/adeelahmad/tether/actions/workflows/ci.yml/badge.svg)](https://github.com/adeelahmad/tether/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/adeelahmad/tether)](https://goreportcard.com/report/github.com/adeelahmad/tether)
@@ -31,9 +31,14 @@ Chrome already speaks, and turns each tab into something any client can use:
   storage, real JavaScript. You get the rendered page back.
 - 🤖 **A WebDriver endpoint.** Point Selenium at it and most scripts just
   work — against your actual signed-in profile.
-- 🧩 **One core, four faces.** The proxy and WebDriver ship today; an MCP
-  server for agents and a live remote-browser UI are designed in and
-  stubbed ([architecture](docs/ARCHITECTURE.md)).
+- 🧠 **An MCP server for agents.** Claude, Cursor or your own agent get
+  tools to read, click, type, screenshot and fetch in your real browser
+  ([docs/MCP.md](docs/MCP.md)).
+- 🖥️ **A live remote-browser UI.** Open `/remote/` from your phone or another
+  laptop, watch any tab in real time, and take over with mouse, keyboard and
+  clipboard — even the tab your agent is driving ([docs](docs/REMOTE.md)).
+- 🧩 **One core, four faces.** Proxy, WebDriver, MCP and the remote UI all ship
+  today on the same tab sessions ([architecture](docs/ARCHITECTURE.md)).
 - 🔒 **Safe by default.** Loopback-only unless you set a token. Built to sit
   on a private [Tailscale](https://tailscale.com) tailnet, not the internet.
 
@@ -73,8 +78,9 @@ screen for everyone else. 🎉
 
 ```mermaid
 flowchart LR
-  A["curl / requests / agent"] -- "HTTP proxy" --> T
+  A["curl / requests"] -- "HTTP proxy" --> T
   B["Selenium"] -- "WebDriver" --> T
+  D["AI agent"] -- "MCP" --> T
   T["tether serve<br/>sessions · policy · auth"] -- "DevTools Protocol" --> C
   subgraph C["Your Chrome (logged in)"]
     T1["tab: github.com"]
@@ -126,6 +132,19 @@ Responses carry `X-Tether-Tab-ID`, `X-Tether-Final-URL` (after redirects)
 and, on errors, a stable `X-Tether-Error` code (`tab_gone`, `forbidden`,
 `navigation_failed`, `timeout`, …).
 
+### MCP (AI agents)
+
+```sh
+claude mcp add --transport http tether http://127.0.0.1:8787/mcp
+```
+
+Then ask: *"Open my GitHub notifications and summarise what needs me."* The
+agent gets `browser_navigate`, `browser_snapshot`, `browser_click`,
+`browser_type`, `browser_screenshot`, `browser_fetch` and more, all in your
+signed-in Chrome. Claude Desktop and other stdio clients use the bundled
+bridge (`"command": "tether", "args": ["mcp"]`). Setup for every client,
+the full tool list and the security notes: [docs/MCP.md](docs/MCP.md).
+
 ### WebDriver
 
 ```python
@@ -138,6 +157,16 @@ d.quit()
 
 Covered commands and behaviour: [docs/WEBDRIVER.md](docs/WEBDRIVER.md).
 
+### Remote browser UI
+
+Open **http://127.0.0.1:8787/remote/** (or just the server address) in any
+browser. Pick a tab, see it live, click, scroll, type, paste; answer its
+`alert`/`confirm` dialogs; open, navigate and close tabs. Toggle *watch only*
+to look over an agent's shoulder without disturbing it. With `--token`, the UI
+asks for the token once and keeps a strict, UI-only cookie.
+[docs/REMOTE.md](docs/REMOTE.md) covers the controls, Tailscale setup and the
+websocket protocol.
+
 ### Control API
 
 ```sh
@@ -145,8 +174,15 @@ curl -s http://127.0.0.1:8787/tether/v1/tabs                           # list se
 curl -s -X POST http://127.0.0.1:8787/tether/v1/tabs -d '{"url":"https://example.com"}'
 curl -s -X POST http://127.0.0.1:8787/tether/v1/tabs/$TAB/eval \
      -d '{"expression":"document.title"}'                               # Runtime.evaluate
+curl -s "http://127.0.0.1:8787/tether/v1/tabs/$TAB/logs?level=warning" # console + browser logs
 curl -s -X DELETE http://127.0.0.1:8787/tether/v1/tabs/$TAB            # close
 ```
+
+Every tab Tether drives keeps its recent `console.*` output, uncaught
+exceptions and browser log entries (failed requests, security warnings).
+`GET …/logs` returns `{"entries": [...], "next": N}`; pass `?after=N` to read
+only what is new, and `?level=debug|info|warning|error` to filter. The same
+buffer backs WebDriver's `driver.get_log("browser")`.
 
 ### From another machine (Tailscale)
 
@@ -155,10 +191,25 @@ export TETHER_TOKEN="$(openssl rand -hex 32)"
 tether serve --launch --addr "$(tailscale ip -4):8787"
 # elsewhere on the tailnet:
 curl -x "http://tether:$TETHER_TOKEN@my-laptop:8787" --cacert tether-ca.pem https://github.com/
+# or watch and drive it from your phone: http://my-laptop:8787/remote/
 ```
 
 Tether refuses to listen beyond loopback without a token. Read
 [SECURITY.md](SECURITY.md) before exposing it anywhere.
+
+### One token per agent
+
+Give every agent its own token with its own domain rules. Each token only
+sees the tabs it opened, and the rules are enforced inside the browser, so
+redirects, link clicks and page script can't wander off the allowlist either.
+
+```sh
+tether serve --policy-file examples/policy.json   # tokens + rules, see docs/POLICIES.md
+curl -s -H "Authorization: Bearer $TETHER_RESEARCH_TOKEN" http://127.0.0.1:8787/tether/v1/whoami
+# lock a single tab tighter still
+curl -s -H "Authorization: Bearer $TETHER_RESEARCH_TOKEN" -X POST http://127.0.0.1:8787/tether/v1/tabs \
+  -d '{"url":"https://en.wikipedia.org/","policy":{"allow":["en.wikipedia.org"]}}'
+```
 
 ## Configuration
 
@@ -174,9 +225,15 @@ Every flag has a `TETHER_*` environment variable; flags win.
 | `--chrome-bin`, `--chrome-args`, `--profile-dir` | auto | With `--launch` |
 | `--idle-timeout` | `15m` | Close tabs Tether opened after inactivity (`0` = never) |
 | `--timeout` | `60s` | Default per-request timeout |
+| `--console-buffer` | `1000` | Console/log entries kept per tab (`0` = no capture) |
 | `--allow-domains` | all | Comma-separated navigation allowlist (applies to every face) |
+| `--deny-domains` | none | Comma-separated denylist; deny beats allow |
+| `--policy-file` | — | JSON file with per-token rules and tokens — see [docs/POLICIES.md](docs/POLICIES.md) |
 | `--data-dir` | user config dir | Local CA and launched profile |
 | `--no-mitm` | `false` | Refuse HTTPS `CONNECT` instead of intercepting |
+| `--mcp` | `true` | Serve the MCP face at `/mcp` |
+| `--no-remote` | `false` | Don't serve the remote-browser UI at `/remote/` |
+| `--remote-quality` | `70` | JPEG quality of the remote UI video (1–100) |
 | `--log-level`, `--log-format` | `info`, `text` | `json` for machines; secrets are always redacted |
 
 Docker (headless Chromium inside the image):
@@ -195,20 +252,23 @@ local CA, and it only drives Chromium-family browsers.
 | Uses your real logged-in profile | ✅ | ✅ | ❌ (re-login, stored creds) | ❌ |
 | Needs a browser extension | **No** | Yes | No | No |
 | Plain HTTP proxy (curl, any language) | ✅ | ❌ | Rarely | ❌ |
-| W3C WebDriver / Selenium | ✅ common set | ❌ | Often | ✅ |
-| MCP for agents | Planned | Often | Often | Via wrappers |
+| W3C WebDriver / Selenium | ✅ incl. frames, alerts, windows, uploads, PDF | ❌ | Often | ✅ |
+| MCP for agents | ✅ | Often | Often | Via wrappers |
 | Runs entirely on your machine | ✅ | ✅ | ❌ | ✅ |
 | Remote access | Tailscale + token | Usually local only | ✅ | DIY |
+| Watch & take over a tab live | ✅ built-in web UI | ❌ | ✅ | ❌ |
 | Single static binary | ✅ | ❌ | n/a | ❌ (driver + runtime) |
 | Browsers | Chrome / Chromium / Edge | Varies | Varies | Many |
 
 ## Status & roadmap
 
 - [x] Tab-session core, HTTP/HTTPS proxy, WebDriver common set, control API
+- [x] WebDriver Actions: hover, drag and drop, key chords, wheel, multi-touch
 - [x] Safe-by-default exposure, token auth, domain allowlist seam
-- [ ] MCP server face (tools over the same core) — stubbed at `/mcp`
-- [ ] Remote-browser UI with live screencast and input — stubbed at `/remote`
-- [ ] Per-session / per-agent policies; console log capture; WebDriver Actions
+- [x] MCP server face: 16 browser tools over the same core, plus a stdio bridge
+- [x] Remote-browser UI: live screencast, mouse/keyboard/clipboard, dialogs, tab management
+- [x] Per-token and per-session domain policies, enforced in the browser ([docs/POLICIES.md](docs/POLICIES.md))
+- [x] Per-tab console and browser log capture (control API + WebDriver `get_log`)
 
 ## Contributing
 

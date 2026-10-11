@@ -73,17 +73,22 @@ dockers_v2:
       org.opencontainers.image.source: "{{ .GitURL }}"
       org.opencontainers.image.licenses: GPL-3.0-or-later
 
+# The Homebrew cask is published to adeelahmad/homebrew-tap only when the
+# HOMEBREW_TAP_GITHUB_TOKEN secret is set (a PAT with write access to that
+# repo). Without it skip_upload resolves to "true": the cask is still
+# rendered into dist/ but nothing is pushed, and the rest of the release
+# ships normally.
 homebrew_casks:
   - name: tether
     repository:
       owner: adeelahmad
       name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+      token: '{{ index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}'
     directory: Casks
     homepage: https://github.com/adeelahmad/tether
     description: Your logged-in Chrome as a proxy and WebDriver endpoint, from anywhere. No extension.
     license: GPL-3.0-or-later
-    skip_upload: auto
+    skip_upload: '{{ if index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}auto{{ else }}true{{ end }}'
     hooks:
       post:
         install: |

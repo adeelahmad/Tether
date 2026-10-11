@@ -21,6 +21,7 @@ const (
 	ErrJavaScript              = "javascript error"
 	ErrDetachedShadowRoot      = "detached shadow root"
 	ErrNoSuchAlert             = "no such alert"
+	ErrMoveTargetOutOfBounds   = "move target out of bounds"
 	ErrNoSuchCookie            = "no such cookie"
 	ErrNoSuchElement           = "no such element"
 	ErrNoSuchFrame             = "no such frame"
@@ -46,6 +47,7 @@ var statusFor = map[string]int{
 	ErrJavaScript:              http.StatusInternalServerError,
 	ErrDetachedShadowRoot:      http.StatusNotFound,
 	ErrNoSuchAlert:             http.StatusNotFound,
+	ErrMoveTargetOutOfBounds:   http.StatusInternalServerError,
 	ErrNoSuchCookie:            http.StatusNotFound,
 	ErrNoSuchElement:           http.StatusNotFound,
 	ErrNoSuchFrame:             http.StatusNotFound,

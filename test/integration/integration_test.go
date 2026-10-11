@@ -57,8 +57,29 @@ func site() *httptest.Server {
 <a id="link" href="/me?clicked=1">again</a>
 </body></html>`, user, user)
 	})
+	mux.HandleFunc("/noisy", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>noisy</title><img src="/missing.png">
+<script>console.log('hello', 42, {a: 1}); console.warn('careful'); console.error('boom');</script>
+<script>throw new Error('kaboom')</script>`)
+	})
 	mux.HandleFunc("/search", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `<!doctype html><title>results</title><h1 id="r">%s</h1>`, r.URL.Query().Get("q"))
+	})
+	mux.HandleFunc("/actions", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>actions</title>
+<style>body{margin:0;height:4000px} .box{position:absolute;width:100px;height:100px}</style>
+<div id="a" class="box" style="left:20px;top:20px;background:red"></div>
+<div id="b" class="box" style="left:300px;top:20px;background:blue"></div>
+<input id="t" style="position:absolute;left:20px;top:200px">
+<div id="far" class="box" style="left:20px;top:3000px;background:green"></div>
+<script>
+window.log = [];
+const rec = (e) => log.push([e.type, e.target.id || e.target.tagName, e.key || '',
+  e.detail || 0, e.ctrlKey ? 'ctrl' : '', e.shiftKey ? 'shift' : ''].join(':'));
+for (const t of ['mousedown','mouseup','click','dblclick','contextmenu','keydown','keyup','touchstart','touchend'])
+  addEventListener(t, rec, true);
+addEventListener('contextmenu', (e) => e.preventDefault());
+</script>`)
 	})
 	mux.HandleFunc("/frames", func(w http.ResponseWriter, r *http.Request) {
 		// localhost and 127.0.0.1 are different sites, so the second frame
@@ -116,7 +137,7 @@ document.getElementById('closed').attachShadow({mode: 'closed'}).innerHTML = '<s
 	return httptest.NewServer(mux)
 }
 
-func startTether(t *testing.T) (base string, client *http.Client) {
+func startTether(t *testing.T, opts ...func(*config.Config)) (base string, client *http.Client) {
 	t.Helper()
 	if _, err := cdp.FindChrome(); err != nil {
 		if os.Getenv("TETHER_REQUIRE_CHROME") != "" {
@@ -128,7 +149,11 @@ func startTether(t *testing.T) (base string, client *http.Client) {
 	cfg := &config.Config{
 		Addr: "127.0.0.1:0", Chrome: "auto", Launch: true, Headless: true,
 		ProfileDir: dir + "/profile", DataDir: dir, IdleTimeout: time.Minute, Timeout: 30 * time.Second,
-		LogLevel: "debug", ChromeArgs: strings.Fields(os.Getenv("TETHER_CHROME_ARGS")),
+		ConsoleBuffer: 100,
+		LogLevel:      "debug", ChromeArgs: strings.Fields(os.Getenv("TETHER_CHROME_ARGS")),
+	}
+	for _, o := range opts {
+		o(cfg)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	log := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -409,6 +434,252 @@ func TestWebDriver(t *testing.T) {
 	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 200 {
 		t.Fatalf("delete session: %v", err)
 	}
+}
+
+type logEntry struct {
+	Seq    uint64 `json:"seq"`
+	Source string `json:"source"`
+	Level  string `json:"level"`
+	Text   string `json:"text"`
+	URL    string `json:"url"`
+}
+
+// waitLogs polls the control API until the tab has logged everything want
+// names (text substrings), returning the response.
+func waitLogs(t *testing.T, base, tab, query string, want ...string) (entries []logEntry, next uint64) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		resp, body := send(t, http.DefaultClient, "GET", base+"/tether/v1/tabs/"+tab+"/logs"+query, nil, nil)
+		if resp.StatusCode != 200 {
+			t.Fatalf("logs: %d %s", resp.StatusCode, body)
+		}
+		var out struct {
+			Entries []logEntry `json:"entries"`
+			Next    uint64     `json:"next"`
+		}
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatal(err)
+		}
+		missing := ""
+		for _, w := range want {
+			found := false
+			for _, e := range out.Entries {
+				found = found || strings.Contains(e.Text, w)
+			}
+			if !found {
+				missing = w
+			}
+		}
+		if missing == "" {
+			return out.Entries, out.Next
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("log %q never arrived; got %+v", missing, out.Entries)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func TestConsoleLogs(t *testing.T) {
+	s := site()
+	defer s.Close()
+	base, _ := startTether(t)
+
+	resp, body := send(t, http.DefaultClient, "POST", base+"/tether/v1/tabs", strings.NewReader(`{"url":"`+s.URL+`/noisy"}`), nil)
+	if resp.StatusCode != 201 {
+		t.Fatalf("create tab: %d %s", resp.StatusCode, body)
+	}
+	tab := resp.Header.Get("X-Tether-Tab-ID")
+
+	entries, next := waitLogs(t, base, tab, "", "hello 42", "careful", "boom", "kaboom", "404")
+	bySource := map[string]logEntry{}
+	for _, e := range entries {
+		if _, ok := bySource[e.Source+"/"+e.Level]; !ok {
+			bySource[e.Source+"/"+e.Level] = e
+		}
+	}
+	for _, k := range []string{"console/info", "console/warning", "console/error", "exception/error", "network/error"} {
+		if _, ok := bySource[k]; !ok {
+			t.Errorf("no %s entry in %+v", k, entries)
+		}
+	}
+	if e := bySource["console/info"]; !strings.HasPrefix(e.Text, "hello 42 Object") || e.URL != s.URL+"/noisy" {
+		t.Errorf("console.log entry = %+v", e)
+	}
+
+	// Filtering and the cursor.
+	errs, _ := waitLogs(t, base, tab, "?level=error", "boom")
+	for _, e := range errs {
+		if e.Level != "error" {
+			t.Errorf("level filter let through %+v", e)
+		}
+	}
+	if _, err := http.DefaultClient.Do(mustReq(t, "POST", base+"/tether/v1/tabs/"+tab+"/eval", `{"expression":"console.info('later')"}`)); err != nil {
+		t.Fatal(err)
+	}
+	newer, _ := waitLogs(t, base, tab, fmt.Sprintf("?after=%d", next), "later")
+	for _, e := range newer {
+		if e.Seq <= next {
+			t.Errorf("after=%d returned an older entry %+v", next, e)
+		}
+	}
+
+	// The same buffer through WebDriver, attached to the tab.
+	resp, err := http.Post(base+"/session", "application/json",
+		strings.NewReader(`{"capabilities":{"alwaysMatch":{"tether:options":{"tabId":"`+tab+`"}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	w := &wd{t: t, base: base, sid: tab}
+	if types := w.call("GET", "/se/log/types", nil).([]any); len(types) == 0 || types[0] != "browser" {
+		t.Fatalf("log types = %v", types)
+	}
+	got := w.call("POST", "/se/log", map[string]string{"type": "browser"}).([]any)
+	levels := map[string]bool{}
+	for _, e := range got {
+		levels[e.(map[string]any)["level"].(string)] = true
+	}
+	if !levels["SEVERE"] || !levels["WARNING"] || !levels["INFO"] {
+		t.Fatalf("webdriver log levels = %v from %v", levels, got)
+	}
+	// A second read returns only entries logged since the first (a late
+	// favicon 404 can legitimately arrive in between), never repeats.
+	seen := map[string]bool{}
+	for _, e := range got {
+		seen[fmt.Sprint(e)] = true
+	}
+	for _, e := range w.call("POST", "/log", map[string]string{"type": "browser"}).([]any) {
+		if seen[fmt.Sprint(e)] {
+			t.Fatalf("second read repeated entry: %v", e)
+		}
+	}
+}
+
+func mustReq(t *testing.T, method, u, body string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(method, u, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return req
+}
+
+func TestWebDriverActions(t *testing.T) {
+	s := site()
+	defer s.Close()
+	base, _ := startTether(t)
+
+	resp, err := http.Post(base+"/session", "application/json",
+		strings.NewReader(`{"capabilities":{"alwaysMatch":{"browserName":"chrome","timeouts":{"pageLoad":20000}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ns struct {
+		Value struct {
+			SessionID string `json:"sessionId"`
+		} `json:"value"`
+	}
+	json.NewDecoder(resp.Body).Decode(&ns)
+	resp.Body.Close()
+	w := &wd{t: t, base: base, sid: ns.Value.SessionID}
+	defer func() {
+		req, _ := http.NewRequest("DELETE", base+"/session/"+w.sid, nil)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	w.call("POST", "/url", map[string]string{"url": s.URL + "/actions"})
+
+	el := func(css string) map[string]string { return map[string]string{webdriver.ElementKey: w.find(css)} }
+	a, b := el("#a"), el("#b")
+	mouse := func(acts ...any) map[string]any {
+		return map[string]any{"type": "pointer", "id": "mouse", "parameters": map[string]string{"pointerType": "mouse"}, "actions": acts}
+	}
+	keys := func(acts ...any) map[string]any { return map[string]any{"type": "key", "id": "kb", "actions": acts} }
+	moveTo := func(origin any) map[string]any {
+		return map[string]any{"type": "pointerMove", "origin": origin, "x": 0, "y": 0}
+	}
+	down := func(btn int) map[string]any { return map[string]any{"type": "pointerDown", "button": btn} }
+	up := func(btn int) map[string]any { return map[string]any{"type": "pointerUp", "button": btn} }
+	kd := func(v string) map[string]any { return map[string]any{"type": "keyDown", "value": v} }
+	ku := func(v string) map[string]any { return map[string]any{"type": "keyUp", "value": v} }
+	pause := map[string]any{"type": "pause", "duration": 0}
+	perform := func(seqs ...any) { w.call("POST", "/actions", map[string]any{"actions": seqs}) }
+	events := func() string {
+		v := w.call("POST", "/execute/sync", map[string]any{"script": "const l = log; window.log = []; return l.join(' ');", "args": []any{}})
+		return v.(string)
+	}
+	expect := func(what, got string, want ...string) {
+		t.Helper()
+		for _, s := range want {
+			if !strings.Contains(got, s) {
+				t.Fatalf("%s: missing %q in %s", what, s, got)
+			}
+		}
+	}
+
+	perform(mouse(moveTo(a), down(0), up(0), down(0), up(0)))
+	expect("double click", events(), "click:a::1::", "click:a::2::", "dblclick:a::2::")
+
+	perform(mouse(moveTo(b), down(2), up(2)))
+	expect("context click", events(), "contextmenu:b:")
+
+	perform(keys(kd("\uE009"), pause, pause, ku("\uE009")), mouse(moveTo(a), down(0), up(0)))
+	expect("ctrl click", events(), "click:a::1:ctrl:")
+
+	perform(mouse(moveTo(a), down(0), map[string]any{"type": "pointerMove", "origin": b, "x": 0, "y": 0, "duration": 100}, up(0)))
+	expect("drag", events(), "mousedown:a:", "mouseup:b:")
+
+	in := el("#t")
+	perform(mouse(moveTo(in), down(0), up(0)))
+	perform(keys(kd("\uE008"), kd("h"), ku("h"), kd("i"), ku("i"), ku("\uE008"), kd("1"), ku("1")))
+	if got := w.call("GET", "/element/"+in[webdriver.ElementKey]+"/property/value", nil); got != "HI1" {
+		t.Fatalf("typed = %v", got)
+	}
+	expect("keys", events(), "keydown:t:H:0::shift", "keydown:t:1:0::")
+
+	perform(map[string]any{"type": "pointer", "id": "finger", "parameters": map[string]string{"pointerType": "touch"},
+		"actions": []any{moveTo(a), down(0), up(0)}})
+	expect("tap", events(), "touchstart:a:", "touchend:a:")
+
+	// An element below the fold is scrolled into view to be reached.
+	perform(mouse(moveTo(el("#far")), down(0), up(0)))
+	expect("far click", events(), "click:far:")
+
+	perform(map[string]any{"type": "wheel", "id": "wheel", "actions": []any{
+		map[string]any{"type": "scroll", "x": 10, "y": 10, "deltaX": 0, "deltaY": -2000},
+	}})
+	var y float64
+	for i := 0; i < 50; i++ {
+		y = w.call("POST", "/execute/sync", map[string]any{"script": "return scrollY", "args": []any{}}).(float64)
+		if y < 2000 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if y >= 2000 {
+		t.Fatalf("wheel did not scroll up: scrollY = %v", y)
+	}
+
+	// Out of the viewport is a W3C error, not a silent no-op.
+	body, _ := json.Marshal(map[string]any{"actions": []any{mouse(map[string]any{"type": "pointerMove", "x": -5, "y": 0})}})
+	resp, err = http.Post(base+"/session/"+w.sid+"/actions", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 500 || !strings.Contains(string(out), "move target out of bounds") {
+		t.Fatalf("out of bounds: %d %s", resp.StatusCode, out)
+	}
+
+	// Release lets go of keys still held.
+	perform(keys(kd("\uE008")))
+	events()
+	w.call("DELETE", "/actions", nil)
+	expect("release", events(), "keyup:", ":Shift:")
 }
 
 func newWD(t *testing.T, base string, caps map[string]any) *wd {

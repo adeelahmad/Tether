@@ -54,11 +54,12 @@ flowchart LR
 | `internal/app` | Assembles a running Tether from a `Config`: Chrome, core, faces, server. Used by the CLI and the integration tests. |
 | `internal/cdp` | The only package that speaks CDP. `Browser` and `Tab` interfaces; `Chrome` implementation over a single flattened websocket; endpoint discovery and `Launch`. `cdptest` holds fakes. |
 | `internal/session` | `Session` = one page target. `Manager` resolves requests to sessions, opens/adopts/closes tabs, reaps idle ones, and serialises work per tab. |
-| `internal/core` | `Core.Do` (execute an HTTP request in a tab), `Eval`, `Navigate`, the `Policy` seam, header hygiene, and error classification shared by HTTP faces. |
+| `internal/policy` | Domain rules, principals (tokens) and the policy file. A leaf package shared by session and core. |
+| `internal/core` | `Core.Do` (execute an HTTP request in a tab), `Eval`, `Navigate`, the layered `RulesPolicy` and browser-side guard, header hygiene, and error classification shared by HTTP faces. |
 | `internal/proxy` | Forward-proxy face. Plain HTTP and CONNECT with TLS interception via `internal/certs`. |
 | `internal/webdriver` | W3C WebDriver face (see [WEBDRIVER.md](WEBDRIVER.md)). |
-| `internal/api` | Control plane: health, tabs, eval, CA download. |
-| `internal/server` | Listener, routing, token auth, loopback guard, graceful shutdown, exposure checks. |
+| `internal/api` | Control plane: health, whoami, tabs, tab policies, eval, CA download. |
+| `internal/server` | Listener, routing, per-token auth, loopback guard, graceful shutdown, exposure checks. |
 | `internal/mcp`, `internal/remote` | Planned faces, mounted and answering `501` today. |
 | `internal/certs`, `internal/logx`, `internal/config`, `internal/version`, `internal/httpx` | Supporting pieces. |
 
@@ -96,6 +97,16 @@ Lifecycle: tabs Tether opened are closed after `--idle-timeout`, on
 shutdown. If the user closes a tab in Chrome, the `Target.targetDestroyed`
 event ends the session immediately. Adopted tabs are released, never closed
 (unless explicitly forced).
+
+Console capture: when a tab is attached, `cdp` enables the `Runtime` and
+`Log` domains and keeps a ring buffer (`--console-buffer`, default 1000) of
+`Runtime.consoleAPICalled`, `Runtime.exceptionThrown` and `Log.entryAdded`
+events. Every entry carries a per-tab sequence number, so any face can read
+"what's new since N" without its own copy: `Core.Logs(session, after,
+minLevel)` returns the entries plus the next cursor, and does not take the
+tab lock, so logs can be read while a request is running. The control API
+(`GET /tether/v1/tabs/{id}/logs`) and WebDriver's `get_log("browser")` are
+thin views over it; the MCP face will be another.
 
 Concurrency: each session has a one-slot semaphore; requests to one tab run
 one at a time (a tab can only be on one page), different tabs run in
@@ -137,11 +148,29 @@ proxy auth and Tether control headers never reach the page.
 |---|---|---|
 | HTTP proxy | **Shipping** | `Sessions.Resolve`, `Core.Do` |
 | WebDriver | **Shipping** | `Sessions.Create/Get/Close`, `Core.Navigate`, `cdp.Tab` primitives |
-| MCP server | Stub (`/mcp` → 501) | Will map tools (`navigate`, `read_page`, `click`, `type`, `eval`, `screenshot`, `tabs`) onto the same calls. `core.Policy` becomes per-agent permissions. Streamable HTTP transport on the same listener, so it inherits auth and Tailscale exposure. |
+| MCP server | Stub (`/mcp` → 501) | Will map tools (`navigate`, `read_page`, `click`, `type`, `eval`, `screenshot`, `tabs`) onto the same calls. Each agent authenticates with its own token, so per-token policies and tab ownership apply unchanged. Streamable HTTP transport on the same listener, so it inherits auth and Tailscale exposure. |
 | Remote UI | Stub (`/remote` → 501) | Will stream a tab with `Page.startScreencast` (WebRTC later) and forward input through `cdp.Tab.Click`/`Key`, letting a person watch or take over exactly the tab an agent is driving. |
 
 Every face implements `core.Face` (`Name()` + `http.Handler`) and is mounted
 by the server; adding one is a new package and one line in `internal/app`.
+
+## Policy and identity
+
+`internal/policy` is a leaf package: domain `Rules`, the `Principal` a request
+acts as (one per token, carried in the request context by the server's
+authenticator), and the policy file. The layers meet in two places:
+
+- **`session.Manager`** records each tab's owner and refuses non-admin
+  principals any tab they don't own (`Get`, `Resolve`, `Close`); per-site
+  default tabs are keyed by principal.
+- **`core.RulesPolicy`** checks global ∩ requesting principal ∩ owning
+  principal ∩ the tab's session rules on every `Do`/`Navigate`, and re-checks
+  the final URL. `Core.Prepare` installs `cdp.Tab.Guard` on restricted tabs: a
+  `Fetch`-domain interceptor that holds every top-level document request to
+  the same policy inside Chrome.
+
+Faces stay policy-agnostic: they pass the request context through and call
+the core. See [POLICIES.md](POLICIES.md) for the user-facing model.
 
 ## Design choices
 

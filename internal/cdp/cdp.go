@@ -110,6 +110,25 @@ type Tab interface {
 	// HandleDialog accepts or dismisses the open dialog, answering a
 	// prompt with promptText when it is non-nil.
 	HandleDialog(ctx context.Context, accept bool, promptText *string) error
+
+	// Mouse dispatches one mouse or pen event (move, press, release,
+	// wheel) in viewport CSS pixels.
+	Mouse(ctx context.Context, m MouseEvent) error
+	// Touch dispatches one touch event carrying every active touch point.
+	Touch(ctx context.Context, t TouchEvent) error
+
+	// Guard enforces check on every top-level document request the tab
+	// makes — navigations, redirects, link clicks, script-driven location
+	// changes — by pausing it in the browser (Fetch domain) and failing it
+	// with net::ERR_BLOCKED_BY_CLIENT when check returns an error. Calling
+	// Guard again replaces check; a nil check removes the guard. check runs
+	// on the event loop and must not block.
+	Guard(ctx context.Context, check func(url string) error) error
+
+	// Logs returns the buffered console messages, uncaught exceptions and
+	// browser log entries with Seq > after, oldest first. Capture starts
+	// when Tether attaches; the buffer keeps the most recent entries only.
+	Logs(after uint64) []LogEntry
 }
 
 // TabInfo describes a page target.
@@ -250,6 +269,49 @@ type KeyEvent struct {
 	Text      string `json:"text,omitempty"`
 	KeyCode   int    `json:"windowsVirtualKeyCode,omitempty"`
 	Modifiers int    `json:"modifiers,omitempty"`
+}
+
+// MouseEvent is a single Input.dispatchMouseEvent.
+type MouseEvent struct {
+	Type       string  `json:"type"` // mouseMoved, mousePressed, mouseReleased, mouseWheel
+	X          float64 `json:"x"`
+	Y          float64 `json:"y"`
+	Modifiers  int     `json:"modifiers,omitempty"`
+	Button     string  `json:"button,omitempty"` // none, left, middle, right, back, forward
+	Buttons    int     `json:"buttons,omitempty"`
+	ClickCount int     `json:"clickCount,omitempty"`
+	DeltaX     float64 `json:"deltaX,omitempty"`
+	DeltaY     float64 `json:"deltaY,omitempty"`
+
+	PointerType        string  `json:"pointerType,omitempty"` // mouse, pen
+	Force              float64 `json:"force,omitempty"`
+	TangentialPressure float64 `json:"tangentialPressure,omitempty"`
+	TiltX              float64 `json:"tiltX,omitempty"`
+	TiltY              float64 `json:"tiltY,omitempty"`
+	Twist              int     `json:"twist,omitempty"`
+}
+
+// TouchPoint is one finger of a TouchEvent.
+type TouchPoint struct {
+	ID                 int     `json:"id"`
+	X                  float64 `json:"x"`
+	Y                  float64 `json:"y"`
+	RadiusX            float64 `json:"radiusX,omitempty"`
+	RadiusY            float64 `json:"radiusY,omitempty"`
+	Force              float64 `json:"force,omitempty"`
+	TangentialPressure float64 `json:"tangentialPressure,omitempty"`
+	TiltX              float64 `json:"tiltX,omitempty"`
+	TiltY              float64 `json:"tiltY,omitempty"`
+	Twist              int     `json:"twist,omitempty"`
+}
+
+// TouchEvent is a single Input.dispatchTouchEvent. Chrome diffs
+// TouchPoints against the previous event, so it must list every finger
+// still down; touchEnd and touchCancel carry none.
+type TouchEvent struct {
+	Type        string       `json:"type"` // touchStart, touchMove, touchEnd, touchCancel
+	TouchPoints []TouchPoint `json:"touchPoints"`
+	Modifiers   int          `json:"modifiers,omitempty"`
 }
 
 // JSError is an exception thrown by page JavaScript.

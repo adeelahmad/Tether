@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,13 +19,17 @@ type chromeTab struct {
 	id      string
 	session string
 
-	mu       sync.Mutex
-	children map[string]string // out-of-process iframe target ID → CDP session
-	sessions map[string]bool   // this tab's session and its iframes'
-	dialog   *Dialog
-	dialogOn string        // session the open dialog belongs to
-	dialogCh chan struct{} // closed when a dialog opens
-	unsub    func()
+	mu         sync.Mutex
+	children   map[string]string // out-of-process iframe target ID → CDP session
+	sessions   map[string]bool   // this tab's session and its iframes'
+	dialog     *Dialog
+	dialogOn   string        // session the open dialog belongs to
+	dialogCh   chan struct{} // closed when a dialog opens
+	unsub      func()
+	guardMu    sync.Mutex // serialises Guard calls
+	guardCheck atomic.Pointer[func(string) error]
+	guardUnsub func()
+	logs       *logBuffer // nil when capture is off
 }
 
 var _ Tab = (*chromeTab)(nil)
@@ -41,6 +46,13 @@ func newTab(b *Chrome, id, session string) *chromeTab {
 }
 
 func (t *chromeTab) ID() string { return t.id }
+
+func (t *chromeTab) Logs(after uint64) []LogEntry {
+	if t.logs == nil {
+		return nil
+	}
+	return t.logs.since(after)
+}
 
 func (t *chromeTab) call(ctx context.Context, method string, params, out any) error {
 	return t.b.c.call(ctx, t.session, method, params, out)
@@ -333,11 +345,14 @@ func (e *exceptionDetails) err() error {
 	if e == nil {
 		return nil
 	}
-	msg := e.Text
+	return &JSError{Text: e.message()}
+}
+
+func (e *exceptionDetails) message() string {
 	if e.Exception != nil && e.Exception.Description != "" {
-		msg = e.Exception.Description
+		return e.Exception.Description
 	}
-	return &JSError{Text: msg}
+	return e.Text
 }
 
 // ArrayItems returns the elements of a remote array, in index order.
@@ -463,4 +478,29 @@ func (t *chromeTab) PrintPDF(ctx context.Context, opts PDFOptions) ([]byte, erro
 		return nil, err
 	}
 	return res.Data, nil
+}
+
+func (t *chromeTab) Mouse(ctx context.Context, m MouseEvent) error {
+	if m.Type == "mouseWheel" { // Chrome requires both deltas, even when zero
+		return t.call(ctx, "Input.dispatchMouseEvent", struct {
+			MouseEvent
+			DeltaX float64 `json:"deltaX"`
+			DeltaY float64 `json:"deltaY"`
+		}{m, m.DeltaX, m.DeltaY}, nil)
+	}
+	return t.call(ctx, "Input.dispatchMouseEvent", m, nil)
+}
+
+func (t *chromeTab) Touch(ctx context.Context, e TouchEvent) error {
+	if e.TouchPoints == nil {
+		e.TouchPoints = []TouchPoint{}
+	}
+	// Chrome only acknowledges touch input in a visible tab; in a
+	// background tab the dispatch hangs. Mouse and keys need no such step.
+	if e.Type == "touchStart" {
+		if err := t.call(ctx, "Page.bringToFront", nil, nil); err != nil {
+			return err
+		}
+	}
+	return t.call(ctx, "Input.dispatchTouchEvent", e, nil)
 }

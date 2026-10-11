@@ -10,6 +10,7 @@ import (
 	"slices"
 
 	"github.com/adeelahmad/tether/internal/cdp"
+	"github.com/adeelahmad/tether/internal/core"
 	"github.com/adeelahmad/tether/internal/session"
 )
 
@@ -188,8 +189,14 @@ func (h *Handler) switchWindow(ctx context.Context, ws *wdSession, _ *http.Reque
 	if !ws.hasWindow(*req.Handle) {
 		return nil, wdErr(ErrNoSuchWindow, "no window with handle "+*req.Handle+" in this session")
 	}
-	s, err := h.core.Sessions.Get(ctx, *req.Handle) // attaches to popups on first use
+	// A popup is attached on first use, as the session's own tab under
+	// its owner and session rules.
+	s, err := h.core.AdoptPopup(ctx, *req.Handle, ws.s)
 	if err != nil {
+		if errors.Is(err, core.ErrForbidden) {
+			ws.dropWindow(*req.Handle)
+			return nil, err
+		}
 		return nil, wdErr(ErrNoSuchWindow, err.Error())
 	}
 	ws.s, ws.frames, ws.promptText = s, nil, nil
@@ -223,6 +230,11 @@ func (h *Handler) newWindow(ctx context.Context, ws *wdSession, _ *http.Request,
 		s, err = h.core.Sessions.Create(ctx)
 	}
 	if err != nil {
+		return nil, err
+	}
+	// The new window lives under the same session rules as the session.
+	if err := h.core.SetSessionRules(ctx, s, ws.s.Rules()); err != nil {
+		h.closeTab(context.WithoutCancel(ctx), s.ID)
 		return nil, err
 	}
 	ws.addWindow(s.ID)

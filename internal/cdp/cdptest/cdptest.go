@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/adeelahmad/tether/internal/cdp"
 )
@@ -20,6 +21,9 @@ type Page struct {
 	HTML     string // returned for rendered HTML
 	Body     []byte // returned by ResponseBody
 	Err      error
+	// RedirectTo makes the navigation end on another URL, as an HTTP
+	// redirect would. The browser-side guard sees it too.
+	RedirectTo string
 }
 
 // Browser is a fake cdp.Browser.
@@ -214,8 +218,17 @@ type Tab struct {
 
 	Navigations []string
 	Calls       []Call
+	logs        []cdp.LogEntry
+	logSeq      uint64
 	CallResult  json.RawMessage
 	EvalResult  json.RawMessage
+	// ScriptResult, when set, is returned as the "v" property of the
+	// object CallFunction yields, the shape the WebDriver script wrapper
+	// produces (a JSON-encoded value).
+	ScriptResult any
+	// Input records every Key, Mouse and Touch event, in order, as
+	// cdp.KeyEvent, cdp.MouseEvent or cdp.TouchEvent values.
+	Input []any
 	// Frame is the frame path of the last InFrame view that made a call.
 	Frame []int
 	// Shadow is what ShadowRoot returns.
@@ -226,6 +239,8 @@ type Tab struct {
 	PDFs []cdp.PDFOptions
 	// Answers records HandleDialog calls.
 	Answers []DialogAnswer
+
+	guard func(string) error
 }
 
 // DialogAnswer is one HandleDialog call.
@@ -258,12 +273,26 @@ func (t *Tab) page() Page {
 
 func (t *Tab) Navigate(_ context.Context, url string, _ cdp.Wait) (*cdp.Document, error) {
 	t.mu.Lock()
+	if t.guard != nil && t.guard(url) != nil {
+		t.mu.Unlock()
+		return nil, &cdp.NavigationError{URL: url, Text: cdp.BlockedByClient}
+	}
 	t.url = url
 	t.Navigations = append(t.Navigations, url)
 	t.mu.Unlock()
 	p := t.page()
 	if p.Err != nil {
 		return nil, p.Err
+	}
+	if p.RedirectTo != "" {
+		t.mu.Lock()
+		if t.guard != nil && t.guard(p.RedirectTo) != nil {
+			t.mu.Unlock()
+			return nil, &cdp.NavigationError{URL: p.RedirectTo, Text: cdp.BlockedByClient}
+		}
+		t.url = p.RedirectTo
+		t.mu.Unlock()
+		url = p.RedirectTo
 	}
 	h := p.Header
 	if h == nil {
@@ -289,24 +318,37 @@ func (t *Tab) CallFunction(_ context.Context, decl string, opts cdp.CallOptions)
 	t.mu.Lock()
 	t.Calls = append(t.Calls, Call{Decl: decl, Args: opts.Args})
 	res := t.CallResult
+	script := t.ScriptResult
 	t.mu.Unlock()
+	if script != nil {
+		return &cdp.Remote{ObjectID: "script-result", Type: "object"}, nil
+	}
 	if res == nil {
 		res = json.RawMessage("null")
 	}
 	return &cdp.Remote{ObjectID: "result", Type: "object", Value: res}, nil
 }
 
-// Properties lists the fields of CallResult when it is a JSON object, so a
-// CallResult of {"v": "<json>", "e": null} answers the WebDriver script
-// wrapper with the value <json>.
+// Properties answers the WebDriver script wrapper: for ScriptResult it
+// yields {"v": <json>}; otherwise it lists the fields of CallResult when it
+// is a JSON object, so a CallResult of {"v": "<json>", "e": null} answers
+// with the value <json>.
 func (t *Tab) Properties(_ context.Context, objectID string) ([]cdp.Property, error) {
 	t.mu.Lock()
-	res := t.CallResult
+	res, script := t.CallResult, t.ScriptResult
 	t.mu.Unlock()
-	var fields map[string]json.RawMessage
-	if objectID != "result" {
+	switch {
+	case objectID == "script-result" && script != nil:
+		inner, err := json.Marshal(script)
+		if err != nil {
+			return nil, err
+		}
+		v, _ := json.Marshal(string(inner))
+		return []cdp.Property{{Name: "v", Value: &cdp.Remote{Type: "string", Value: v}}}, nil
+	case objectID != "result":
 		return nil, nil
 	}
+	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(res, &fields); err != nil {
 		return nil, nil //nolint:nilerr // a non-object result has no properties
 	}
@@ -335,7 +377,71 @@ func (t *Tab) Cookies(context.Context, []string) ([]cdp.Cookie, error) { return 
 func (t *Tab) SetCookie(context.Context, cdp.Cookie) error             { return nil }
 func (t *Tab) DeleteCookie(context.Context, string, string) error      { return nil }
 func (t *Tab) Click(context.Context, float64, float64) error           { return nil }
-func (t *Tab) Key(context.Context, cdp.KeyEvent) error                 { return nil }
+
+func (t *Tab) Key(_ context.Context, k cdp.KeyEvent) error     { return t.record(k) }
+func (t *Tab) Mouse(_ context.Context, m cdp.MouseEvent) error { return t.record(m) }
+func (t *Tab) Touch(_ context.Context, e cdp.TouchEvent) error { return t.record(e) }
+
+func (t *Tab) record(ev any) error {
+	t.mu.Lock()
+	t.Input = append(t.Input, ev)
+	t.mu.Unlock()
+	return nil
+}
+
+// Guard records check; Navigate refuses URLs it rejects, like the real
+// browser-side guard.
+func (t *Tab) Guard(_ context.Context, check func(string) error) error {
+	t.mu.Lock()
+	t.guard = check
+	t.mu.Unlock()
+	return nil
+}
+
+// Events returns a copy of the recorded input events.
+func (t *Tab) Events() []any {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]any(nil), t.Input...)
+}
+
+// Guarded reports whether a navigation guard is installed.
+func (t *Tab) Guarded() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.guard != nil
+}
+
+// SetURL moves the tab without a navigation, as page script or a redirect
+// would.
+func (t *Tab) SetURL(url string) {
+	t.mu.Lock()
+	t.url = url
+	t.mu.Unlock()
+}
+
+// Log appends a log entry, as if the page had printed it, and returns its
+// sequence number.
+func (t *Tab) Log(level, text string) uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.logSeq++
+	e := cdp.LogEntry{Seq: t.logSeq, Time: time.Now(), Source: "console", Level: level, Text: text}
+	t.logs = append(t.logs, e)
+	return e.Seq
+}
+
+func (t *Tab) Logs(after uint64) []cdp.LogEntry {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []cdp.LogEntry
+	for _, e := range t.logs {
+		if e.Seq > after {
+			out = append(out, e)
+		}
+	}
+	return out
+}
 
 func (t *Tab) InFrame(path []int) cdp.Tab {
 	if len(path) == 0 {

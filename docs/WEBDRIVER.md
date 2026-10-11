@@ -27,6 +27,11 @@ With a token: `ClientConfig(remote_server_addr=..., auth_type=AuthType.BEARER, t
   `{"capabilities": {"alwaysMatch": {"tether:options": {"tabId": "<id>"}}}}`.
   Attached tabs are left open when the session ends (override with
   `"keepTab": false`).
+- Session rules: `{"tether:options": {"policy": {"allow": ["example.com"], "deny": ["admin.example.com"]}}}`
+  restricts where the session's tab may navigate, on top of the global and
+  token rules (see [POLICIES.md](POLICIES.md)). Navigating outside them fails
+  with `unsupported operation`; *Execute Script* needs a token with the
+  `scripts` permission.
 - To give the session a browser window of its own (so resizing it never
   touches yours), pass `"tether:options": {"newWindow": true}`.
 - Every window handle is a tab ID. A session starts with one window and
@@ -75,6 +80,8 @@ With a token: `ClientConfig(remote_server_addr=..., auth_type=AuthType.BEARER, t
 | Take Screenshot / Element Screenshot | `GET /session/{id}/screenshot`, `…/element/{eid}/screenshot` |
 | Print Page | `POST /session/{id}/print` |
 | Upload File (Selenium extension) | `POST /session/{id}/se/file` (also `/file`) |
+| Perform / Release Actions | `POST`, `DELETE /session/{id}/actions` — key, pointer (mouse, pen, touch) and wheel input |
+| Get Log / Get Log Types (Selenium extension) | `POST /session/{id}/se/log`, `GET …/se/log/types` (also `/log`, `/log/types`) — types `browser`, `driver` |
 
 Locator strategies: `css selector`, `xpath`, `link text`,
 `partial link text`, `tag name` (Selenium maps `By.ID`, `By.NAME` and
@@ -96,6 +103,12 @@ Locator strategies: `css selector`, `xpath`, `link text`,
   keys (Enter, Tab, arrows, Backspace, …) and sticky modifiers are supported.
   Enter waits for a form submission's navigation.
 - **Page load strategy** `normal` (default), `eager` and `none` are honoured.
+- **Browser logs** (`driver.get_log("browser")`) work like ChromeDriver:
+  each call returns the console messages, uncaught exceptions and browser
+  log entries since the previous call, with levels `DEBUG`, `INFO`,
+  `WARNING` and `SEVERE`. Capture starts when Tether attaches to the tab and
+  keeps the last `--console-buffer` entries; no `goog:loggingPrefs` needed.
+  The `driver` log is always empty.
 - **Cookies** are your browser's real cookies, for the current frame's
   document. `DELETE /cookie` deletes the current site's cookies from your
   profile — that *will* log you out.
@@ -158,10 +171,50 @@ temporary directory that is deleted when the session ends.
 base64 PDF of the current window's page. Chrome builds that can only print
 when headless answer `unsupported operation` in a normal window.
 
+## Actions
+
+`ActionChains` and the W3C Actions API work: hover, drag and drop,
+double and context click, modifier chords, held keys, wheel scrolling,
+and multi-touch. Every action becomes a real CDP input event, so pages see
+trusted `mousedown`/`keydown`/`wheel`/`touchstart` events, not synthetic
+ones.
+
+```python
+from selenium.webdriver import ActionChains, Keys
+
+ActionChains(driver).key_down(Keys.CONTROL).click(link).key_up(Keys.CONTROL).perform()
+ActionChains(driver).drag_and_drop(card, column).perform()
+ActionChains(driver).scroll_by_amount(0, 800).perform()
+```
+
+- **Sources**: `key`, `pointer` (`pointerType` `mouse`, `pen` or `touch`),
+  `wheel` and `none`, with every action type the spec defines (`pause`,
+  `keyDown`/`keyUp`, `pointerDown`/`pointerUp`/`pointerMove`/`pointerCancel`,
+  `scroll`). Sources run tick by tick; a tick lasts as long as its longest
+  `pause`, `pointerMove` or `scroll`, and moves and scrolls with a
+  `duration` are spread over it frame by frame.
+- **Origins**: `viewport`, `pointer` and element origins. An element's
+  in-view centre point is used; unlike chromedriver, an element that is off
+  screen is scrolled into view rather than failing. A target outside the
+  viewport is `move target out of bounds`.
+- **Keys**: all W3C key codes (modifiers left and right, F1–F12, numpad,
+  navigation keys). Shift applies the US layout (`a`→`A`, `1`→`!`);
+  Ctrl/Meta chords type no text. Modifiers held by a key source apply to
+  pointer and wheel events in the same session.
+- **Clicks**: a press within 500 ms and 4 px of the last one on the same
+  button counts as a repeat click, so down/up/down/up is a double click.
+  Pen pressure, tilt and twist, and touch width/height, are passed through.
+- **State** (held keys and buttons, pointer positions) persists across
+  `POST /actions` calls until `DELETE /actions`, which releases everything
+  still held, newest source first.
+- **Touch** brings the tab to the front, because Chrome only delivers touch
+  input to a visible tab. Mouse, pen, keys and wheel work in a background
+  tab. `pointerCancel` cancels touch contacts and is a no-op for mouse and
+  pen.
+
 ## Not supported (yet)
 
-The Actions API (`/actions`) is in progress separately. Not planned for now:
-BiDi, `Get Computed Role / Label`, and the Selenium Grid extensions other
-than file upload. These return `unknown command` (or
+Not planned for now: BiDi, `Get Computed Role / Label`, and the Selenium
+Grid extensions other than file upload. These return `unknown command` (or
 `unsupported operation`). Contributions welcome — they belong in
 `internal/webdriver` on top of the existing `cdp.Tab` primitives.

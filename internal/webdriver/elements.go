@@ -217,14 +217,77 @@ func (h *Handler) click(ctx context.Context, ws *wdSession, r *http.Request, _ [
 	if err != nil {
 		return nil, err
 	}
+	ref := elementArg(r.PathValue("eid"))
+	inFrame := len(ws.frames) > 0
+	if inFrame {
+		if _, err := runScript(ctx, ws.tab(), scriptArmClick, []json.RawMessage{ref}, false); err != nil {
+			return nil, err
+		}
+	}
 	if err := ws.s.Tab.Click(ctx, p.X+ox, p.Y+oy); err != nil {
 		if errors.Is(err, cdp.ErrDialogOpen) {
 			return nil, nil // the click opened a user prompt
 		}
 		return nil, err
 	}
+	if inFrame {
+		if err := confirmFrameClick(ctx, ws, ref); err != nil {
+			return nil, err
+		}
+	}
 	settle(ctx, ws)
 	return nil, nil
+}
+
+// Chrome routes input into a frame asynchronously, so a click in a frame
+// is confirmed by a one-shot listener on the element. If the real click
+// does not arrive (a cross-site frame Chrome could not hit-test), the
+// element is clicked from script instead.
+const (
+	scriptArmClick = `const e = arguments[0], k = Symbol.for('tether.clicked');
+e[k] = false;
+e.addEventListener('click', () => { e[k] = true; }, {capture: true, once: true});`
+	scriptClicked   = `return arguments[0][Symbol.for('tether.clicked')] !== false;`
+	scriptClickJS   = `const e = arguments[0]; delete e[Symbol.for('tether.clicked')]; e.click();`
+	frameClickGrace = time.Second
+)
+
+func confirmFrameClick(ctx context.Context, ws *wdSession, ref json.RawMessage) error {
+	deadline := time.Now().Add(frameClickGrace)
+	for {
+		v, err := runScript(ctx, ws.tab(), scriptClicked, []json.RawMessage{ref}, false)
+		if err != nil {
+			// The click navigated the frame or removed the element: it landed.
+			if errors.Is(err, cdp.ErrDialogOpen) || isGone(err) {
+				return nil
+			}
+			return err
+		}
+		if v == true {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	_, err := runScript(ctx, ws.tab(), scriptClickJS, []json.RawMessage{ref}, false)
+	if errors.Is(err, cdp.ErrDialogOpen) {
+		return nil
+	}
+	return err
+}
+
+func isGone(err error) bool {
+	var we *Error
+	if errors.As(err, &we) {
+		return we.Code == ErrStaleElement || we.Code == ErrNoSuchElement
+	}
+	return errors.Is(err, cdp.ErrNoSuchFrame) || cdp.IsStaleObject(err)
 }
 
 // settle gives a click-triggered navigation a moment to start and, if one

@@ -2,7 +2,7 @@
 
 Tether hands out a logged-in browser, so "who may take it where" matters.
 Policies answer that in three layers, all enforced in the core — every face
-(proxy, WebDriver, control API, and the MCP and remote-UI faces as they land)
+(proxy, WebDriver, control API, MCP and the remote UI)
 is held to them.
 
 | Layer | Set by | Scope |

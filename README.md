@@ -34,9 +34,11 @@ Chrome already speaks, and turns each tab into something any client can use:
 - 🧠 **An MCP server for agents.** Claude, Cursor or your own agent get
   tools to read, click, type, screenshot and fetch in your real browser
   ([docs/MCP.md](docs/MCP.md)).
-- 🧩 **One core, four faces.** Proxy, WebDriver and MCP ship today on the
-  same tab sessions; a live remote-browser UI is designed in and stubbed
-  ([architecture](docs/ARCHITECTURE.md)).
+- 🖥️ **A live remote-browser UI.** Open `/remote/` from your phone or another
+  laptop, watch any tab in real time, and take over with mouse, keyboard and
+  clipboard — even the tab your agent is driving ([docs](docs/REMOTE.md)).
+- 🧩 **One core, four faces.** Proxy, WebDriver, MCP and the remote UI all ship
+  today on the same tab sessions ([architecture](docs/ARCHITECTURE.md)).
 - 🔒 **Safe by default.** Loopback-only unless you set a token. Built to sit
   on a private [Tailscale](https://tailscale.com) tailnet, not the internet.
 
@@ -155,6 +157,16 @@ d.quit()
 
 Covered commands and behaviour: [docs/WEBDRIVER.md](docs/WEBDRIVER.md).
 
+### Remote browser UI
+
+Open **http://127.0.0.1:8787/remote/** (or just the server address) in any
+browser. Pick a tab, see it live, click, scroll, type, paste; answer its
+`alert`/`confirm` dialogs; open, navigate and close tabs. Toggle *watch only*
+to look over an agent's shoulder without disturbing it. With `--token`, the UI
+asks for the token once and keeps a strict, UI-only cookie.
+[docs/REMOTE.md](docs/REMOTE.md) covers the controls, Tailscale setup and the
+websocket protocol.
+
 ### Control API
 
 ```sh
@@ -179,6 +191,7 @@ export TETHER_TOKEN="$(openssl rand -hex 32)"
 tether serve --launch --addr "$(tailscale ip -4):8787"
 # elsewhere on the tailnet:
 curl -x "http://tether:$TETHER_TOKEN@my-laptop:8787" --cacert tether-ca.pem https://github.com/
+# or watch and drive it from your phone: http://my-laptop:8787/remote/
 ```
 
 Tether refuses to listen beyond loopback without a token. Read
@@ -219,6 +232,8 @@ Every flag has a `TETHER_*` environment variable; flags win.
 | `--data-dir` | user config dir | Local CA and launched profile |
 | `--no-mitm` | `false` | Refuse HTTPS `CONNECT` instead of intercepting |
 | `--mcp` | `true` | Serve the MCP face at `/mcp` |
+| `--no-remote` | `false` | Don't serve the remote-browser UI at `/remote/` |
+| `--remote-quality` | `70` | JPEG quality of the remote UI video (1–100) |
 | `--log-level`, `--log-format` | `info`, `text` | `json` for machines; secrets are always redacted |
 
 Docker (headless Chromium inside the image):
@@ -241,6 +256,7 @@ local CA, and it only drives Chromium-family browsers.
 | MCP for agents | ✅ | Often | Often | Via wrappers |
 | Runs entirely on your machine | ✅ | ✅ | ❌ | ✅ |
 | Remote access | Tailscale + token | Usually local only | ✅ | DIY |
+| Watch & take over a tab live | ✅ built-in web UI | ❌ | ✅ | ❌ |
 | Single static binary | ✅ | ❌ | n/a | ❌ (driver + runtime) |
 | Browsers | Chrome / Chromium / Edge | Varies | Varies | Many |
 
@@ -250,7 +266,7 @@ local CA, and it only drives Chromium-family browsers.
 - [x] WebDriver Actions: hover, drag and drop, key chords, wheel, multi-touch
 - [x] Safe-by-default exposure, token auth, domain allowlist seam
 - [x] MCP server face: 16 browser tools over the same core, plus a stdio bridge
-- [ ] Remote-browser UI with live screencast and input — stubbed at `/remote`
+- [x] Remote-browser UI: live screencast, mouse/keyboard/clipboard, dialogs, tab management
 - [x] Per-token and per-session domain policies, enforced in the browser ([docs/POLICIES.md](docs/POLICIES.md))
 - [x] Per-tab console and browser log capture (control API + WebDriver `get_log`)
 

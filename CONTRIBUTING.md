@@ -35,7 +35,7 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) first. In short:
 | `internal/proxy` | HTTP/HTTPS forward-proxy face |
 | `internal/webdriver` | W3C WebDriver face |
 | `internal/mcp` | MCP face and stdio bridge |
-| `internal/remote` | Planned face (stub) |
+| `internal/remote` | Remote-browser UI face; its web app lives in `internal/remote/assets` (plain HTML/CSS/JS, no build step) |
 | `internal/server`, `internal/api` | Listener, auth, guard, control API |
 
 Faces stay thin. If a change needs browser logic, it almost certainly

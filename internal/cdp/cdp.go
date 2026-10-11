@@ -158,12 +158,14 @@ type WindowBounds struct {
 	State                    string
 }
 
-// Dialog is an open JavaScript dialog.
+// Dialog is an open JavaScript dialog. Closed is set only on the
+// notification Screen.WatchDialogs sends when one closes.
 type Dialog struct {
 	Type          string `json:"type"` // alert, confirm, prompt, beforeunload
 	Message       string `json:"message"`
 	DefaultPrompt string `json:"defaultPrompt"`
 	URL           string `json:"url"`
+	Closed        bool   `json:"closed,omitempty"`
 }
 
 // PDFOptions configure PrintPDF. Lengths are in inches; zero values take
@@ -269,6 +271,10 @@ type KeyEvent struct {
 	Text      string `json:"text,omitempty"`
 	KeyCode   int    `json:"windowsVirtualKeyCode,omitempty"`
 	Modifiers int    `json:"modifiers,omitempty"`
+	// Commands are editing commands (e.g. "selectAll", "copy") to run with
+	// the key. macOS Chrome binds shortcuts to these at the menu level, so
+	// synthetic keys alone do not trigger them.
+	Commands []string `json:"commands,omitempty"`
 }
 
 // MouseEvent is a single Input.dispatchMouseEvent.

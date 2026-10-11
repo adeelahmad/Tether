@@ -26,6 +26,8 @@ within 72 hours and to ship a fix or mitigation for confirmed issues within
 | Session cookie never forwarded | `tether_tab` is stripped before any request reaches the page or the site. Site `Set-Cookie` headers are not relayed to clients; the browser keeps its cookies. |
 | Background tabs; adopted tabs never closed | Tether doesn't steal focus, and only closes tabs it opened. |
 | Launched Chrome binds DevTools to `127.0.0.1` | The DevTools port itself is never exposed by Tether. |
+| Remote UI login cookie is `HttpOnly`, `SameSite=Strict`, path-scoped and UI-only | Browsers can't send bearer tokens, so `/remote/login` trades the token for an HMAC-of-token cookie that scripts can't read, other sites can't trigger, and the proxy/API/WebDriver never accept. Rotating the token signs every browser out. |
+| Remote UI pages are locked down | Strict CSP (`script-src 'self'`, `frame-ancestors 'none'`), `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`; the websocket rejects foreign `Origin`s. `--no-remote` turns the UI off entirely. |
 
 ## Recommended exposure: Tailscale
 
@@ -71,6 +73,8 @@ a sandbox against a determined attacker who also shares the browser profile
 | One agent reads or steers another agent's tab | Per-token ownership: non-admin tokens only resolve their own tabs, including via cookie, header and WebDriver session ID | Admin tokens see everything by design. |
 | Tether used to read a page the user has open | Only tabs Tether opened, or tabs explicitly addressed by ID, are driven; adopting requires an admin token | Any admin token can address any tab by ID. |
 | Prompt injection: a web page steers an AI agent connected over MCP | Server instructions tell the model page content is untrusted; tool annotations mark destructive tools; `--allow-domains` bounds where it can go; password values and `Set-Cookie` are never returned | An agent with access to your browser can be talked into acting as you. Use an allowlist and a client that confirms destructive tool calls. See [docs/MCP.md](docs/MCP.md#security). |
+| A site embeds or scripts the remote UI (clickjacking, cross-site websocket) | `frame-ancestors 'none'`, `X-Frame-Options: DENY`, Origin check on the websocket, `SameSite=Strict` cookie, Origin/`Sec-Fetch-Site` check on login | — |
+| Remote UI token guessing | Login requires the full token (≥16 chars) and each failure is delayed | Use a long random token (`openssl rand -hex 32`). |
 | Chrome DevTools port exposed | `--launch` binds it to loopback; Tether never re-exposes it | If you start Chrome yourself with `--remote-debugging-address=0.0.0.0`, that is outside Tether's control. |
 | A client attaches local files to a page (WebDriver file inputs) | Clients are fully trusted (see above); remote uploads land in a per-session temp dir deleted when the session ends | A token holder can make a page upload any file the Tether user can read. |
 | Automation rearranges the person's screen | Window resize/maximise/minimise/fullscreen only act on windows holding nothing but Tether tabs | — |

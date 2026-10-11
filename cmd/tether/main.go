@@ -87,7 +87,7 @@ func serve(args []string, stdout, stderr io.Writer) int {
 		"version", version.Version,
 		"addr", a.Addr.String(),
 		"browser", a.Browser,
-		"auth", cfg.Token != "",
+		"auth", cfg.HasAuth(),
 		"ca", a.CAPath,
 	)
 	fmt.Fprintf(stdout, "\n  Tether %s is serving %s on http://%s\n", version.Version, a.Browser, a.Addr)
@@ -95,6 +95,9 @@ func serve(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "  WebDriver: http://%s  (Selenium remote URL)\n", a.Addr)
 	if cfg.MCP {
 		fmt.Fprintf(stdout, "  MCP:       http://%s/mcp  (claude mcp add --transport http tether http://%s/mcp)\n", a.Addr, a.Addr)
+	}
+	if !cfg.NoRemote {
+		fmt.Fprintf(stdout, "  Remote UI: http://%s/remote/  (watch and drive tabs from any browser)\n", a.Addr)
 	}
 	fmt.Fprintln(stdout)
 

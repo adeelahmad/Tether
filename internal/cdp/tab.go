@@ -502,6 +502,9 @@ func (t *chromeTab) PrintPDF(ctx context.Context, opts PDFOptions) ([]byte, erro
 
 func (t *chromeTab) Mouse(ctx context.Context, m MouseEvent) error {
 	if m.Type == "mouseWheel" { // Chrome requires both deltas, even when zero
+		if m.Button == "" {
+			m.Button = "none"
+		}
 		return t.call(ctx, "Input.dispatchMouseEvent", struct {
 			MouseEvent
 			DeltaX float64 `json:"deltaX"`

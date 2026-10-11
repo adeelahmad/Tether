@@ -1,8 +1,8 @@
 // Package core is the engine every Tether face is built on: it turns
 // "this request, in this tab" into real browser work and back.
 //
-// Four faces share it — the HTTP proxy, WebDriver endpoints and MCP server
-// (shipping), and a remote-browser UI (stub). Faces stay thin:
+// Four faces share it — the HTTP proxy, the WebDriver endpoints, the MCP
+// server and the remote-browser UI, all shipping. Faces stay thin:
 // they translate their protocol into core calls and core results back into
 // their protocol. Sessions, policy and browser access live here.
 package core

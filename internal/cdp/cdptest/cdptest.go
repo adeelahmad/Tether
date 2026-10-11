@@ -232,8 +232,13 @@ type Tab struct {
 	// ResolveErr, when set, fails ResolveNode (a stale element).
 	ResolveErr error
 
-	Clicks  [][2]float64
-	Keys    []cdp.KeyEvent
+	Clicks [][2]float64
+	Keys   []cdp.KeyEvent
+	// Mice and Texts record Mouse and InsertText calls; Fronted counts
+	// BringToFront (see screen.go).
+	Mice    []cdp.MouseEvent
+	Texts   []string
+	Fronted int
 	Shots   []*cdp.Rect
 	Moves   []int
 	Reloads int
@@ -256,7 +261,9 @@ type Tab struct {
 	// Answers records HandleDialog calls.
 	Answers []DialogAnswer
 
-	guard func(string) error
+	guard     func(string) error
+	casts     int
+	dialogFns []func(cdp.Dialog)
 }
 
 // DialogAnswer is one HandleDialog call.
@@ -451,7 +458,12 @@ func (t *Tab) Key(_ context.Context, k cdp.KeyEvent) error {
 	return nil
 }
 
-func (t *Tab) Mouse(_ context.Context, m cdp.MouseEvent) error { return t.record(m) }
+func (t *Tab) Mouse(_ context.Context, m cdp.MouseEvent) error {
+	t.mu.Lock()
+	t.Mice = append(t.Mice, m)
+	t.mu.Unlock()
+	return t.record(m)
+}
 func (t *Tab) Touch(_ context.Context, e cdp.TouchEvent) error { return t.record(e) }
 
 func (t *Tab) record(ev any) error {
@@ -548,8 +560,14 @@ func (t *Tab) PrintPDF(_ context.Context, o cdp.PDFOptions) ([]byte, error) {
 // OpenDialog simulates the page opening a JavaScript dialog.
 func (t *Tab) OpenDialog(d cdp.Dialog) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.dialog = &d
+	fns := append([]func(cdp.Dialog){}, t.dialogFns...)
+	t.mu.Unlock()
+	for _, fn := range fns {
+		if fn != nil {
+			fn(d)
+		}
+	}
 }
 
 func (t *Tab) Dialog() *cdp.Dialog {
@@ -564,12 +582,19 @@ func (t *Tab) Dialog() *cdp.Dialog {
 
 func (t *Tab) HandleDialog(_ context.Context, accept bool, text *string) error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if t.dialog == nil {
+		t.mu.Unlock()
 		return fmt.Errorf("no dialog")
 	}
 	t.dialog = nil
 	t.Answers = append(t.Answers, DialogAnswer{Accept: accept, Text: text})
+	fns := append([]func(cdp.Dialog){}, t.dialogFns...)
+	t.mu.Unlock()
+	for _, fn := range fns {
+		if fn != nil {
+			fn(cdp.Dialog{Closed: true})
+		}
+	}
 	return nil
 }
 

@@ -65,9 +65,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   faces; `--mcp=false` turns it off. See `docs/MCP.md`.
 - `tether mcp`: a stdio bridge for MCP clients that don't speak HTTP
   (Claude Desktop, IDEs), local or across a tailnet.
-- Remote-browser UI face as a documented stub on the shared core.
 - Screenshots of idle background tabs no longer hang: Tether brings the tab
   to the front and retries, as ChromeDriver does (WebDriver and MCP).
+- Remote-browser web UI at `/remote/`, embedded in the binary: live video of
+  any Chrome tab (CDP screencast, with screenshot keyframes for quiet and
+  background tabs), mouse, wheel, touch, keyboard (IME and mobile keyboards
+  included) and clipboard forwarding, JavaScript dialog relay, address bar,
+  back/forward/reload, open/close tabs, watch-only mode and a phone layout.
+  One screencast per tab is shared by all viewers. With `--token`, a sign-in
+  page trades the token for an `HttpOnly`, `SameSite=Strict`, UI-only cookie.
+  Each token signs in to its own UI session under its own rules and tabs.
+  New flags `--no-remote` and `--remote-quality`. See `docs/REMOTE.md`.
 - Sprint Zero: Makefile, golangci-lint, CI (lint → test + coverage →
   build matrix → govulncheck), CodeQL, Dependabot, GoReleaser (archives,
   checksums, multi-arch Docker image, Homebrew cask), community docs.

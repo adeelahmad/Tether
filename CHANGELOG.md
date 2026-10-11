@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   browser's cookies. HTTPS via a local CA (`/tether/v1/ca.pem`).
 - W3C WebDriver endpoints for the common Selenium command set
   (see `docs/WEBDRIVER.md`), sharing the same sessions as the proxy.
+- WebDriver Actions API (`POST`/`DELETE /session/{id}/actions`): key,
+  mouse, pen, touch and wheel input as real CDP events, so `ActionChains`
+  hover, drag and drop, double/context click, modifier chords and scrolling
+  work.
 - Control API under `/tether/v1/`: health, tab list/create/close, and
   JavaScript evaluation via `Runtime.evaluate`.
 - Connects to an existing Chrome (`--chrome auto|port|host:port|ws://…|DevToolsActivePort`)

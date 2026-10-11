@@ -54,6 +54,10 @@ type wdSession struct {
 
 	mu       sync.Mutex
 	timeouts Timeouts
+
+	// input is the Actions API input state. Commands on a session are
+	// serialised by the tab lock, so it needs no lock of its own.
+	input inputState
 }
 
 func (ws *wdSession) getTimeouts() Timeouts {
@@ -150,6 +154,9 @@ func (h *Handler) routes() {
 		c("DELETE /session/{sid}/cookie", h.deleteAllCookies)
 
 		c("GET /session/{sid}/screenshot", h.screenshot)
+
+		c("POST /session/{sid}/actions", h.performActions)
+		c("DELETE /session/{sid}/actions", h.releaseActions)
 	}
 	h.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, wdErr(ErrUnknownCommand, r.Method+" "+r.URL.Path+" is not supported by Tether; see docs/WEBDRIVER.md"))

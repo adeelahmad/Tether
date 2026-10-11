@@ -205,10 +205,11 @@ local CA, and it only drives Chromium-family browsers.
 ## Status & roadmap
 
 - [x] Tab-session core, HTTP/HTTPS proxy, WebDriver common set, control API
+- [x] WebDriver Actions: hover, drag and drop, key chords, wheel, multi-touch
 - [x] Safe-by-default exposure, token auth, domain allowlist seam
 - [ ] MCP server face (tools over the same core) — stubbed at `/mcp`
 - [ ] Remote-browser UI with live screencast and input — stubbed at `/remote`
-- [ ] Per-session / per-agent policies; console log capture; WebDriver Actions
+- [ ] Per-session / per-agent policies; console log capture
 
 ## Contributing
 

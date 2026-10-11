@@ -19,6 +19,7 @@ const (
 	ErrInvalidSelector         = "invalid selector"
 	ErrInvalidSessionID        = "invalid session id"
 	ErrJavaScript              = "javascript error"
+	ErrMoveTargetOutOfBounds   = "move target out of bounds"
 	ErrNoSuchCookie            = "no such cookie"
 	ErrNoSuchElement           = "no such element"
 	ErrNoSuchWindow            = "no such window"
@@ -39,6 +40,7 @@ var statusFor = map[string]int{
 	ErrInvalidSelector:         http.StatusBadRequest,
 	ErrInvalidSessionID:        http.StatusNotFound,
 	ErrJavaScript:              http.StatusInternalServerError,
+	ErrMoveTargetOutOfBounds:   http.StatusInternalServerError,
 	ErrNoSuchCookie:            http.StatusNotFound,
 	ErrNoSuchElement:           http.StatusNotFound,
 	ErrNoSuchWindow:            http.StatusNotFound,

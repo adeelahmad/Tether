@@ -142,6 +142,13 @@ type Tab struct {
 	Calls       []Call
 	CallResult  json.RawMessage
 	EvalResult  json.RawMessage
+	// ScriptResult, when set, is returned as the "v" property of the
+	// object CallFunction yields, the shape the WebDriver script wrapper
+	// produces (a JSON-encoded value).
+	ScriptResult any
+	// Input records every Key, Mouse and Touch event, in order, as
+	// cdp.KeyEvent, cdp.MouseEvent or cdp.TouchEvent values.
+	Input []any
 }
 
 var _ cdp.Tab = (*Tab)(nil)
@@ -199,17 +206,35 @@ func (t *Tab) CallFunction(_ context.Context, decl string, opts cdp.CallOptions)
 	t.mu.Lock()
 	t.Calls = append(t.Calls, Call{Decl: decl, Args: opts.Args})
 	res := t.CallResult
+	script := t.ScriptResult
 	t.mu.Unlock()
+	if script != nil {
+		return &cdp.Remote{ObjectID: "script-result", Type: "object"}, nil
+	}
 	if res == nil {
 		res = json.RawMessage("null")
 	}
 	return &cdp.Remote{Type: "object", Value: res}, nil
 }
 
-func (t *Tab) Properties(context.Context, string) ([]cdp.Property, error) { return nil, nil }
-func (t *Tab) Release(context.Context, string) error                      { return nil }
-func (t *Tab) NodeID(context.Context, string) (int, error)                { return 1, nil }
-func (t *Tab) ResolveNode(context.Context, int) (string, error)           { return "obj", nil }
+func (t *Tab) Properties(_ context.Context, objectID string) ([]cdp.Property, error) {
+	t.mu.Lock()
+	script := t.ScriptResult
+	t.mu.Unlock()
+	if objectID != "script-result" || script == nil {
+		return nil, nil
+	}
+	inner, err := json.Marshal(script)
+	if err != nil {
+		return nil, err
+	}
+	v, _ := json.Marshal(string(inner))
+	return []cdp.Property{{Name: "v", Value: &cdp.Remote{Type: "string", Value: v}}}, nil
+}
+
+func (t *Tab) Release(context.Context, string) error            { return nil }
+func (t *Tab) NodeID(context.Context, string) (int, error)      { return 1, nil }
+func (t *Tab) ResolveNode(context.Context, int) (string, error) { return "obj", nil }
 
 func (t *Tab) ResponseBody(context.Context, string) ([]byte, error) {
 	return t.page().Body, nil
@@ -223,4 +248,21 @@ func (t *Tab) Cookies(context.Context, []string) ([]cdp.Cookie, error) { return 
 func (t *Tab) SetCookie(context.Context, cdp.Cookie) error             { return nil }
 func (t *Tab) DeleteCookie(context.Context, string, string) error      { return nil }
 func (t *Tab) Click(context.Context, float64, float64) error           { return nil }
-func (t *Tab) Key(context.Context, cdp.KeyEvent) error                 { return nil }
+
+func (t *Tab) Key(_ context.Context, k cdp.KeyEvent) error     { return t.record(k) }
+func (t *Tab) Mouse(_ context.Context, m cdp.MouseEvent) error { return t.record(m) }
+func (t *Tab) Touch(_ context.Context, e cdp.TouchEvent) error { return t.record(e) }
+
+func (t *Tab) record(ev any) error {
+	t.mu.Lock()
+	t.Input = append(t.Input, ev)
+	t.mu.Unlock()
+	return nil
+}
+
+// Events returns a copy of the recorded input events.
+func (t *Tab) Events() []any {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]any(nil), t.Input...)
+}

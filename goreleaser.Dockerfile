@@ -1,7 +1,7 @@
 # Release image: the prebuilt binary plus Chromium, so `--launch --headless`
 # works out of the box. To drive a Chrome running elsewhere, pass
 # --chrome http://host:9222 instead of --launch.
-FROM alpine:3.22
+FROM alpine:3.24
 RUN apk add --no-cache chromium ca-certificates font-noto tini \
  && adduser -D -h /home/tether tether \
  && mkdir -p /data && chown tether:tether /data
